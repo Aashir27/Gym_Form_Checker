@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>GymForm AI - Web</title>
+    <!-- Modern Typography -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;500;700;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/style.css">
+  </head>
+  <body>
+    <div id="app">
+      
+      <!-- Video Element (Hidden) used for grabbing frames -->
+      <video id="webcam" autoplay playsinline muted></video>
+
+      <!-- Main UI Container -->
+      <main class="viewport">
+        <!-- Render Canvas for the camera feed and AI skeletal overlay -->
+        <canvas id="render-canvas"></canvas>
+
+        <!-- Glassmorphism Header -->
+        <header class="glass-panel header">
+          <h1>GymForm <span class="accent">AI</span></h1>
+          <div id="status-badge" class="badge warning">
+            <span class="dot"></span>
+            <span id="status-text">INITIALIZING...</span>
+          </div>
+        </header>
+
+        <!-- HUD (Heads Up Display) -->
+        <div class="hud-container">
+          <div class="glass-panel rep-counter" id="rep-counter-panel">
+            <h2 class="label">REPS</h2>
+            <div class="count-display">
+              <span id="rep-count">0</span>
+            </div>
+            <div class="metrics">
+              <div class="metric">
+                <span class="metric-label">ANGLE</span>
+                <span id="angle-display" class="metric-value">0.0°</span>
+              </div>
+              <div class="metric">
+                <span class="metric-label">PHASE</span>
+                <span id="phase-display" class="metric-value phase-idle">IDLE</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
