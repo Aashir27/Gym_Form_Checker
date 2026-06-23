@@ -7,6 +7,13 @@ export class CameraService {
     this.video = videoElement;
     this.canvas = canvasElement;
     this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
+    
+    // Create an offscreen canvas specifically for fast GPU resizing to 640x640
+    this.aiCanvas = document.createElement('canvas');
+    this.aiCanvas.width = 640;
+    this.aiCanvas.height = 640;
+    this.aiCtx = this.aiCanvas.getContext('2d', { willReadFrequently: true });
+
     this.stream = null;
     this.isActive = false;
   }
@@ -49,7 +56,8 @@ export class CameraService {
    */
   getFrameData() {
     if (!this.isActive) return null;
-    this.ctx.drawImage(this.video, 0, 0, this.canvas.width, this.canvas.height);
-    return this.ctx.getImageData(0, 0, this.canvas.width, this.canvas.height);
+    // Draw the video resized directly to 640x640 using the browser's fast hardware scaler
+    this.aiCtx.drawImage(this.video, 0, 0, 640, 640);
+    return this.aiCtx.getImageData(0, 0, 640, 640);
   }
 }

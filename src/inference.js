@@ -8,14 +8,16 @@ export class YoloWorker {
     this.session = null;
     this.inputSize = 640;
     
-    // Disable webgl/wasm threads if it crashes, but webgl is fast for vision
-    ort.env.wasm.numThreads = 1;
+    // Enable multi-threading based on hardware
+    ort.env.wasm.numThreads = Math.max(1, (navigator.hardwareConcurrency || 4) - 1);
   }
 
   async init(modelUrl) {
     try {
-      // Try webgl for hardware acceleration, fallback to wasm
-      this.session = await ort.InferenceSession.create(modelUrl, { executionProviders: ['webgl', 'wasm'] });
+      // Prioritize modern WebGPU if available, then fallback to WebGL and WASM
+      this.session = await ort.InferenceSession.create(modelUrl, { 
+        executionProviders: ['webgpu', 'webgl', 'wasm'] 
+      });
       console.log('ONNX Session initialized.');
       return true;
     } catch (err) {
@@ -42,28 +44,18 @@ export class YoloWorker {
   }
 
   preprocess(imageData) {
-    const { width, height, data } = imageData;
+    const { data } = imageData; // Assuming data is strictly 640x640 from the optimized camera grab
     const float32Data = new Float32Array(3 * this.inputSize * this.inputSize);
     
-    // Simple nearest neighbor resize and CHW packing
-    const scaleX = width / this.inputSize;
-    const scaleY = height / this.inputSize;
-
     let rOffset = 0;
     let gOffset = this.inputSize * this.inputSize;
     let bOffset = 2 * this.inputSize * this.inputSize;
 
-    for (let y = 0; y < this.inputSize; y++) {
-      for (let x = 0; x < this.inputSize; x++) {
-        const srcX = Math.floor(x * scaleX);
-        const srcY = Math.floor(y * scaleY);
-        const i = (srcY * width + srcX) * 4;
-
-        // YOLO expects RGB float32 [0-1]
-        float32Data[rOffset++] = data[i] / 255.0;
-        float32Data[gOffset++] = data[i + 1] / 255.0;
-        float32Data[bOffset++] = data[i + 2] / 255.0;
-      }
+    // Extremely fast 1D array loop (avoids expensive 2D coordinate math in JS)
+    for (let i = 0; i < data.length; i += 4) {
+      float32Data[rOffset++] = data[i] / 255.0;
+      float32Data[gOffset++] = data[i + 1] / 255.0;
+      float32Data[bOffset++] = data[i + 2] / 255.0;
     }
 
     return new ort.Tensor('float32', float32Data, [1, 3, this.inputSize, this.inputSize]);
