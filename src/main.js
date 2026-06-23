@@ -57,45 +57,56 @@ async function init() {
 
   setStatus('TRACKING', 'ok');
   isRunning = true;
-  requestAnimationFrame(processFrame);
+  requestAnimationFrame(drawLoop);
+  inferenceLoop();
 }
 
-async function processFrame() {
+let lastPoses = null;
+let isInferencing = false;
+
+function drawLoop() {
   if (!isRunning) return;
 
-  const frameData = camera.getFrameData();
-  if (frameData) {
-    // 1. Run AI
-    const poses = await yolo.runInference(frameData);
+  // 1. Draw Camera Feed at 60 FPS
+  ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+  ctx.drawImage(videoEl, 0, 0, canvasEl.width, canvasEl.height);
 
-    // 2. Draw Camera Feed
-    ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
-    ctx.drawImage(videoEl, 0, 0, canvasEl.width, canvasEl.height);
+  // 2. Draw latest skeleton state (even if AI is calculating next frame)
+  if (lastPoses && lastPoses.length > 0) {
+    const primaryPose = lastPoses[0];
+    
+    // Filter Keypoints
+    const filteredKeypoints = primaryPose.keypoints.map((kp, i) => {
+      if (kp.confidence > 0.3) {
+        const { x, y } = filters[i].filter(kp.x, kp.y);
+        return { x, y, confidence: kp.confidence };
+      }
+      return kp;
+    });
 
-    if (poses && poses.length > 0) {
-      const primaryPose = poses[0];
-      
-      // 3. Filter Keypoints
-      const filteredKeypoints = primaryPose.keypoints.map((kp, i) => {
-        if (kp.confidence > 0.3) {
-          const { x, y } = filters[i].filter(kp.x, kp.y);
-          return { x, y, confidence: kp.confidence };
-        }
-        return kp;
-      });
-
-      // 4. Draw Skeleton
-      drawSkeleton(filteredKeypoints, canvasEl.width, canvasEl.height);
-
-      // 5. Form Analysis
-      analyzeForm(filteredKeypoints);
-    } else {
-      setStatus('LOST TARGET', 'error');
-    }
+    drawSkeleton(filteredKeypoints, canvasEl.width, canvasEl.height);
+    analyzeForm(filteredKeypoints);
+  } else {
+    setStatus('LOST TARGET', 'error');
   }
 
-  // Loop
-  requestAnimationFrame(processFrame);
+  requestAnimationFrame(drawLoop);
+}
+
+async function inferenceLoop() {
+  if (!isRunning) return;
+
+  if (!isInferencing) {
+    isInferencing = true;
+    const frameData = camera.getFrameData();
+    if (frameData) {
+      lastPoses = await yolo.runInference(frameData);
+    }
+    isInferencing = false;
+  }
+
+  // Yield to browser to prevent freezing the UI thread
+  setTimeout(inferenceLoop, 10);
 }
 
 function drawSkeleton(keypoints, width, height) {
