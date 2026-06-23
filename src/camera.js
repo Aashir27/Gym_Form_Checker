@@ -17,6 +17,7 @@ export class CameraService {
     this.stream = null;
     this.isActive = false;
   }
+  
 
   async start() {
     try {

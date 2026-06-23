@@ -25,6 +25,7 @@ export class YoloWorker {
       return false;
     }
   }
+  
 
   async runInference(imageData) {
     if (!this.session) return null;
