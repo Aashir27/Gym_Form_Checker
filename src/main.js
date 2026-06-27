@@ -14,7 +14,16 @@ const loadingOverlay = document.getElementById("loading-overlay");
 let poseLandmarker = null;
 let lastVideoTime = -1;
 let animationFrameId = null;
+let currentFacingMode = "user";
+let currentZoom = 1;
+let currentStream = null;
+
 const engine = new GymMetricEngine();
+const videoWrapper = document.getElementById("video-wrapper");
+const btnFlipCam = document.getElementById("btn-flip-cam");
+const btnZoomIn = document.getElementById("btn-zoom-in");
+const btnZoomOut = document.getElementById("btn-zoom-out");
+const zoomControls = document.getElementById("zoom-controls");
 
 // Skeleton connections for drawing (MediaPipe Pose 33 landmarks)
 const POSE_CONNECTIONS = [
@@ -64,12 +73,39 @@ async function initPoseLandmarker() {
   loadingOverlay.classList.add("hidden");
 }
 
+// ─── Update View Transform ──────────────────────────────────
+function updateViewTransform() {
+  // Front camera needs mirroring (scaleX(-1))
+  if (currentFacingMode === "user") {
+    videoWrapper.style.transform = `scaleX(-1) scale(${currentZoom})`;
+  } else {
+    videoWrapper.style.transform = `scale(${currentZoom})`;
+  }
+}
+
 // ─── Start Webcam ─────────────────────────────────────────
-async function startCamera() {
+async function startCamera(facingMode = "user") {
+  if (currentStream) {
+    currentStream.getTracks().forEach((track) => track.stop());
+  }
+
+  currentFacingMode = facingMode;
+  currentZoom = 1; // Reset zoom on camera switch
+  updateViewTransform();
+
+  // Show zoom controls only for back camera (optional, but good UX)
+  if (currentFacingMode === "environment") {
+    zoomControls.classList.add("active");
+  } else {
+    zoomControls.classList.remove("active");
+  }
+
   const stream = await navigator.mediaDevices.getUserMedia({
-    video: { width: 640, height: 480, facingMode: "user" },
+    video: { width: 640, height: 480, facingMode: currentFacingMode },
     audio: false,
   });
+  
+  currentStream = stream;
   videoEl.srcObject = stream;
 
   return new Promise((resolve) => {
@@ -80,6 +116,29 @@ async function startCamera() {
     };
   });
 }
+
+// ─── Controls Event Listeners ─────────────────────────────
+btnFlipCam.addEventListener("click", async () => {
+  const newMode = currentFacingMode === "user" ? "environment" : "user";
+  loadingOverlay.classList.remove("hidden");
+  loadingOverlay.querySelector("p").textContent = "Switching camera...";
+  try {
+    await startCamera(newMode);
+  } catch (err) {
+    console.error("Camera flip failed:", err);
+  }
+  loadingOverlay.classList.add("hidden");
+});
+
+btnZoomIn.addEventListener("click", () => {
+  currentZoom = Math.min(currentZoom + 0.2, 3.0);
+  updateViewTransform();
+});
+
+btnZoomOut.addEventListener("click", () => {
+  currentZoom = Math.max(currentZoom - 0.2, 1.0);
+  updateViewTransform();
+});
 
 // ─── Draw Skeleton ────────────────────────────────────────
 function drawSkeleton(landmarks) {
