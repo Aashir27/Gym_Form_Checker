@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="AI-powered gym form checker and rep counter using real-time pose estimation in the browser." />
+  <title>Gym Form Checker — AI Rep Counter</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+  <style>
+    /* ─── Reset & Base ───────────────────────────────────── */
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg-primary: #0a0a0f;
+      --bg-secondary: #12121a;
+      --bg-card: rgba(255, 255, 255, 0.04);
+      --bg-glass: rgba(255, 255, 255, 0.06);
+      --border-glass: rgba(255, 255, 255, 0.08);
+      --text-primary: #f0f0f5;
+      --text-secondary: #8a8a9a;
+      --text-muted: #55556a;
+      --accent: #6c5ce7;
+      --accent-glow: rgba(108, 92, 231, 0.35);
+      --success: #00e676;
+      --success-glow: rgba(0, 230, 118, 0.25);
+      --warning: #ffab40;
+      --warning-glow: rgba(255, 171, 64, 0.25);
+      --danger: #ff5252;
+      --danger-glow: rgba(255, 82, 82, 0.25);
+      --radius: 16px;
+      --radius-sm: 10px;
+      --transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      overflow-x: hidden;
+    }
+
+    /* ─── Background Glow ────────────────────────────────── */
+    body::before {
+      content: '';
+      position: fixed;
+      top: -40%; left: -20%;
+      width: 80vw; height: 80vw;
+      background: radial-gradient(circle, var(--accent-glow) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+      animation: pulseGlow 8s ease-in-out infinite alternate;
+    }
+
+    @keyframes pulseGlow {
+      0%   { opacity: 0.4; transform: scale(1); }
+      100% { opacity: 0.7; transform: scale(1.15); }
+    }
+
+    /* ─── Header ─────────────────────────────────────────── */
+    header {
+      position: relative;
+      z-index: 2;
+      width: 100%;
+      max-width: 900px;
+      padding: 32px 24px 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo-icon {
+      width: 42px; height: 42px;
+      background: linear-gradient(135deg, var(--accent), #a29bfe);
+      border-radius: 12px;
+      display: grid;
+      place-items: center;
+      font-size: 20px;
+      box-shadow: 0 4px 20px var(--accent-glow);
+    }
+
+    .logo h1 {
+      font-size: 1.35rem;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      background: linear-gradient(135deg, #fff 30%, var(--text-secondary));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .logo span {
+      display: block;
+      font-size: 0.72rem;
+      font-weight: 500;
+      color: var(--text-muted);
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      -webkit-text-fill-color: var(--text-muted);
+    }
+
+    /* ─── Exercise Selector ──────────────────────────────── */
+    .exercise-select-wrapper {
+      position: relative;
+    }
+
+    #exercise-select {
+      appearance: none;
+      background: var(--bg-glass);
+      border: 1px solid var(--border-glass);
+      color: var(--text-primary);
+      font-family: 'Inter', sans-serif;
+      font-size: 0.85rem;
+      font-weight: 600;
+      padding: 10px 40px 10px 16px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: var(--transition);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+    }
+
+    #exercise-select:hover { border-color: var(--accent); }
+    #exercise-select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+
+    .exercise-select-wrapper::after {
+      content: '▾';
+      position: absolute;
+      right: 14px; top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-secondary);
+      pointer-events: none;
+      font-size: 0.9rem;
+    }
+
+    #exercise-select option {
+      background: var(--bg-secondary);
+      color: var(--text-primary);
+    }
+
+    /* ─── Main Content ───────────────────────────────────── */
+    main {
+      position: relative;
+      z-index: 2;
+      width: 100%;
+      max-width: 900px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* ─── Video Container ────────────────────────────────── */
+    .video-container {
+      position: relative;
+      width: 100%;
+      max-width: 640px;
+      aspect-ratio: 640 / 480;
+      margin: 0 auto;
+      border-radius: var(--radius);
+      overflow: hidden;
+      border: 1px solid var(--border-glass);
+      background: #000;
+      box-shadow:
+        0 0 0 1px rgba(255,255,255,0.03),
+        0 8px 40px rgba(0, 0, 0, 0.5),
+        0 0 80px -20px var(--accent-glow);
+    }
+
+    #webcam {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1);
+      display: block;
+    }
+
+    #overlay {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%;
+      height: 100%;
+      transform: scaleX(-1);
+      pointer-events: none;
+    }
+
+    /* Loading overlay */
+    .loading-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(10, 10, 15, 0.85);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      z-index: 10;
+      transition: opacity 0.5s ease, visibility 0.5s ease;
+    }
+
+    .loading-overlay.hidden {
+      opacity: 0;
+      visibility: hidden;
+    }
+
+    .spinner {
+      width: 44px; height: 44px;
+      border: 3px solid var(--border-glass);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .loading-overlay p {
+      font-size: 0.85rem;
+      font-weight: 500;
+      color: var(--text-secondary);
+      letter-spacing: 0.5px;
+    }
+
+    /* ─── Stats Row ──────────────────────────────────────── */
+    .stats-row {
+      display: grid;
+      grid-template-columns: 1fr 2fr;
+      gap: 16px;
+      max-width: 640px;
+      margin: 0 auto;
+      width: 100%;
+    }
+
+    .stat-card {
+      background: var(--bg-glass);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      transition: var(--transition);
+    }
+
+    .stat-card:hover {
+      border-color: rgba(255, 255, 255, 0.12);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    }
+
+    .stat-card .label {
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1.8px;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    .stat-card .value {
+      font-size: 2.8rem;
+      font-weight: 900;
+      line-height: 1;
+      background: linear-gradient(135deg, var(--success), #69f0ae);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .stat-card.feedback-card .value {
+      font-size: 1rem;
+      font-weight: 600;
+      line-height: 1.5;
+      background: none;
+      -webkit-text-fill-color: var(--text-secondary);
+      min-height: 2.5em;
+      display: flex;
+      align-items: center;
+    }
+
+    .stat-card.feedback-card .value.has-warning {
+      -webkit-text-fill-color: var(--warning);
+      text-shadow: 0 0 20px var(--warning-glow);
+    }
+
+    .stat-card.feedback-card .value.has-good {
+      -webkit-text-fill-color: var(--success);
+      text-shadow: 0 0 20px var(--success-glow);
+    }
+
+    /* ─── Footer ─────────────────────────────────────────── */
+    footer {
+      position: relative;
+      z-index: 2;
+      padding: 24px;
+      text-align: center;
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      letter-spacing: 0.5px;
+    }
+
+    footer a {
+      color: var(--accent);
+      text-decoration: none;
+      transition: var(--transition);
+    }
+
+    footer a:hover { color: #a29bfe; }
+
+    /* ─── Responsive ─────────────────────────────────────── */
+    @media (max-width: 680px) {
+      header { padding: 20px 16px 0; }
+      main { padding: 16px; }
+      .stats-row { grid-template-columns: 1fr; }
+      .stat-card .value { font-size: 2.2rem; }
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="logo">
+      <div class="logo-icon">🏋️</div>
+      <div>
+        <h1>FormCheck AI</h1>
+        <span>Real-Time Pose Analysis</span>
+      </div>
+    </div>
+    <div class="exercise-select-wrapper">
+      <select id="exercise-select">
+        <option value="squat">Squat</option>
+        <option value="bicep_curl">Bicep Curl</option>
+      </select>
+    </div>
+  </header>
+
+  <main>
+    <div class="video-container" id="video-container">
+      <video id="webcam" autoplay playsinline></video>
+      <canvas id="overlay"></canvas>
+      <div class="loading-overlay" id="loading-overlay">
+        <div class="spinner"></div>
+        <p>Loading AI model…</p>
+      </div>
+    </div>
+
+    <div class="stats-row">
+      <div class="stat-card">
+        <div class="label">Reps</div>
+        <div class="value" id="rep-count">0</div>
+      </div>
+      <div class="stat-card feedback-card">
+        <div class="label">Form Feedback</div>
+        <div class="value has-good" id="form-feedback">Waiting for camera…</div>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    Powered by <a href="https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker" target="_blank" rel="noopener">MediaPipe</a> &middot; Runs 100% in your browser
+  </footer>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
