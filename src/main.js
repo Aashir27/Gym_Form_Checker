@@ -8,6 +8,7 @@ const ctx = canvasEl.getContext("2d");
 const repCountEl = document.getElementById("rep-count");
 const feedbackEl = document.getElementById("form-feedback");
 const exerciseSelect = document.getElementById("exercise-select");
+const colorPicker = document.getElementById("skeleton-color");
 const loadingOverlay = document.getElementById("loading-overlay");
 
 // ─── State ─────────────────────────────────────────────────
@@ -148,9 +149,10 @@ function drawSkeleton(landmarks) {
 
   const w = canvasEl.width;
   const h = canvasEl.height;
+  const baseColor = colorPicker.value; // e.g. "#6c5ce7"
 
   // Draw connections
-  ctx.strokeStyle = "rgba(108, 92, 231, 0.7)";
+  ctx.strokeStyle = baseColor + "b3"; // 70% opacity
   ctx.lineWidth = 3;
   ctx.lineCap = "round";
 
@@ -174,13 +176,13 @@ function drawSkeleton(landmarks) {
     // Outer glow
     ctx.beginPath();
     ctx.arc(x, y, 6, 0, 2 * Math.PI);
-    ctx.fillStyle = "rgba(108, 92, 231, 0.3)";
+    ctx.fillStyle = baseColor + "4d"; // ~30% opacity
     ctx.fill();
 
     // Inner dot
     ctx.beginPath();
     ctx.arc(x, y, 3.5, 0, 2 * Math.PI);
-    ctx.fillStyle = "#a29bfe";
+    ctx.fillStyle = baseColor;
     ctx.fill();
   }
 }

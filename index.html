@@ -111,6 +111,50 @@
       -webkit-text-fill-color: var(--text-muted);
     }
 
+    /* ─── Header Controls ────────────────────────────────── */
+    .header-controls {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .color-picker-wrapper {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: linear-gradient(135deg, rgba(255,255,255,0.05), rgba(255,255,255,0.01));
+      border: 1px solid rgba(255,255,255,0.1);
+      padding: 6px 12px;
+      border-radius: 20px;
+      backdrop-filter: blur(12px) saturate(150%);
+      -webkit-backdrop-filter: blur(12px) saturate(150%);
+    }
+
+    .color-picker-wrapper span {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      letter-spacing: 0.5px;
+    }
+
+    #skeleton-color {
+      appearance: none;
+      -webkit-appearance: none;
+      width: 24px;
+      height: 24px;
+      border: none;
+      border-radius: 50%;
+      cursor: pointer;
+      background: none;
+      padding: 0;
+    }
+
+    #skeleton-color::-webkit-color-swatch-wrapper { padding: 0; }
+    #skeleton-color::-webkit-color-swatch { 
+      border: 2px solid rgba(255,255,255,0.2); 
+      border-radius: 50%; 
+    }
+
     /* ─── Exercise Selector ──────────────────────────────── */
     .exercise-select-wrapper {
       position: relative;
@@ -396,11 +440,17 @@
         <span>Real-Time Pose Analysis</span>
       </div>
     </div>
-    <div class="exercise-select-wrapper">
-      <select id="exercise-select">
-        <option value="squat">Squat</option>
-        <option value="bicep_curl">Bicep Curl</option>
-      </select>
+    <div class="header-controls">
+      <div class="color-picker-wrapper">
+        <span>Color</span>
+        <input type="color" id="skeleton-color" value="#6c5ce7" title="Change skeleton color" />
+      </div>
+      <div class="exercise-select-wrapper">
+        <select id="exercise-select">
+          <option value="squat">Squat</option>
+          <option value="bicep_curl">Bicep Curl</option>
+        </select>
+      </div>
     </div>
   </header>
 
