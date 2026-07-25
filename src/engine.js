@@ -122,8 +122,11 @@ function detectCameraAngle(pts) {
     return { viewAngle: "front", isHorizontal: false, shoulderWidthRatio: 0.5, confidence: 0 };
   }
 
-  // Shoulder width in image space vs torso height
-  const shoulderWidth = dist(lSh, rSh);
+  // Use horizontal shoulder separation, rather than full 2D distance. In a
+  // profile view the two shoulders can be vertically offset, but their
+  // horizontal separation should remain small. Full Euclidean distance was
+  // therefore classifying many true side views as angled/front.
+  const shoulderWidth = Math.abs(lSh.x - rSh.x);
   const torsoHeight = dist(mid(lSh, rSh), mid(lHip, rHip));
   const ratio = torsoHeight > 0.01 ? shoulderWidth / torsoHeight : 0.5;
 
@@ -140,6 +143,39 @@ function detectCameraAngle(pts) {
   const isHorizontal = torsoAngleFromHorizontal < 45 || torsoAngleFromHorizontal > 135;
 
   return { viewAngle, isHorizontal, shoulderWidthRatio: ratio, confidence: 1 };
+}
+
+function armIsVisible(points) {
+  return points.every((point) => vis(point));
+}
+
+/**
+ * Pick the arm closest to / most reliably seen by the camera, then keep that
+ * choice for the rep. Re-selecting on every frame caused the tracker to swap
+ * between a moving arm and a stationary, partly-hidden arm during side curls.
+ */
+function chooseCurlArm(p, previousArm) {
+  const left = [p[LM.L_SHOULDER], p[LM.L_ELBOW], p[LM.L_WRIST]];
+  const right = [p[LM.R_SHOULDER], p[LM.R_ELBOW], p[LM.R_WRIST]];
+  const leftVisible = armIsVisible(left);
+  const rightVisible = armIsVisible(right);
+
+  if (previousArm === "left" && leftVisible) return "left";
+  if (previousArm === "right" && rightVisible) return "right";
+  if (!leftVisible && !rightVisible) return null;
+  if (leftVisible && !rightVisible) return "left";
+  if (rightVisible && !leftVisible) return "right";
+
+  const score = (arm) => {
+    const visibility = arm.reduce((sum, point) => sum + point.visibility, 0) / arm.length;
+    const projectedLength = dist(arm[0], arm[1]) + dist(arm[1], arm[2]);
+    // MediaPipe's z value is lower for a point closer to the camera. It is a
+    // tie-breaker only; visibility and visible arm length remain dominant.
+    const depth = arm.reduce((sum, point) => sum + (Number.isFinite(point.z) ? -point.z : 0), 0) / arm.length;
+    return visibility * 2 + projectedLength + depth * 0.1;
+  };
+
+  return score(left) >= score(right) ? "left" : "right";
 }
 
 /* ───────────────────────────────────────────────────────────────
@@ -287,20 +323,25 @@ const EXERCISE_PROFILES = {
   bicep_curl: {
     label: "Bicep Curl",
     type: "rep",
-    preferredAngles: ["side", "angled"],
+    preferredAngles: ["side"],
     angleHint: "Turn sideways to camera — curls are best tracked from the side",
     bodyOrientation: "upright",
-    requiredLandmarks: [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_ELBOW, LM.R_ELBOW, LM.L_WRIST, LM.R_WRIST, LM.L_HIP, LM.R_HIP],
+    // Both shoulders/hips establish the side-on camera requirement. Only one
+    // complete arm needs to be visible, because the far arm is often occluded
+    // in the profile view required for this exercise.
+    requiredLandmarks: [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP],
+    requiredLandmarkGroups: [
+      [LM.L_SHOULDER, LM.L_ELBOW, LM.L_WRIST],
+      [LM.R_SHOULDER, LM.R_ELBOW, LM.R_WRIST],
+    ],
 
-    computeAngles(p) {
-      // 1. Dynamic Arm Visibility Picker (The Orientation Fix)
-      const lVis = (p[LM.L_SHOULDER]?.visibility || 0) + (p[LM.L_ELBOW]?.visibility || 0) + (p[LM.L_WRIST]?.visibility || 0);
-      const rVis = (p[LM.R_SHOULDER]?.visibility || 0) + (p[LM.R_ELBOW]?.visibility || 0) + (p[LM.R_WRIST]?.visibility || 0);
-      const activeArm = lVis > rVis ? 'left' : 'right';
+    computeAngles(p, engine) {
+      const activeArm = chooseCurlArm(p, engine._activeArm);
+      engine._activeArm = activeArm;
 
-      // 2. Scale-Invariant Joint Angle Tracking (The Distance Fix)
-      let curlAngle, driftAngle;
-      if (activeArm === 'left') {
+      let curlAngle;
+      let driftAngle;
+      if (activeArm === "left") {
         curlAngle = calculateAngle(p[LM.L_SHOULDER], p[LM.L_ELBOW], p[LM.L_WRIST]);
         driftAngle = calculateAngle(p[LM.L_HIP], p[LM.L_SHOULDER], p[LM.L_ELBOW]);
       } else {
@@ -308,36 +349,30 @@ const EXERCISE_PROFILES = {
         driftAngle = calculateAngle(p[LM.R_HIP], p[LM.R_SHOULDER], p[LM.R_ELBOW]);
       }
 
-      // Track direction locally for error conditions
-      if (!this.lastAngle) this.lastAngle = curlAngle;
-      this.isExtending = curlAngle > this.lastAngle;
-      this.lastAngle = curlAngle;
-
-      return { primary: curlAngle, driftAngle };
+      return { primary: curlAngle, driftAngle, activeArm };
     },
 
-    // 3. Two-State Repetition Engine (The Count Fix)
-    // Map user's stage "up"/"down" to our engine's phases:
-    // UP (waiting for > 160) -> DOWN (waiting for < 35) -> COMPLETE (increments rep, sets back to UP)
-    phases: ["UP", "UP", "DOWN", "COMPLETE"],
+    // Start at the bottom, curl to the top, then return to the bottom. The
+    // thresholds leave room for unavoidable 2D pose-estimation error.
+    phases: ["READY", "CONTRACTING", "EXTENDING", "COMPLETE"],
     thresholds: {},
-    minTransitionMs: 0,
-    minROM: 0,
-    minRepDurationMs: 0,
-    minVelocity: 0,
+    minTransitionMs: 100,
+    minROM: 80,
+    minRepDurationMs: 600,
+    minVelocity: 12,
 
     validateAngle(cam) {
-      return cam.viewAngle === "side" || cam.viewAngle === "angled";
+      return cam.viewAngle === "side";
     },
 
     transitionRules(a, phase) {
       switch (phase) {
-        case "UP":
-          // "When curlAngle > 160, the arm is fully extended. Set stage = 'down'."
-          return a.primary > 160 ? "DOWN" : null;
-        case "DOWN":
-          // "When curlAngle < 35 AND stage === 'down', increment rep and flip stage = 'up'."
-          return a.primary < 35 ? "COMPLETE" : null;
+        case "READY":
+          return a.primary > 150 ? "CONTRACTING" : null;
+        case "CONTRACTING":
+          return a.primary < 55 ? "EXTENDING" : null;
+        case "EXTENDING":
+          return a.primary > 150 ? "COMPLETE" : null;
         default: return null;
       }
     },
@@ -346,7 +381,7 @@ const EXERCISE_PROFILES = {
       return { pass: true };
     },
 
-    checkForm(a, phase, cam) {
+    checkForm(a, phase, cam, engine) {
       if (cam && !this.validateAngle(cam)) {
         return { type: "info", msg: this.angleHint };
       }
@@ -358,21 +393,21 @@ const EXERCISE_PROFILES = {
         return { type: "warning", msg: "Keep your elbow tucked at your side! Don't swing your arm." };
       }
 
-      // Error B: "If the user reverses direction and goes back down before hitting the < 35 contraction target..."
-      // (They are in "DOWN" phase trying to contract, but arm starts extending again before reaching 35)
-      if (phase === "DOWN" && this.isExtending && a.primary > 35 && a.primary < 130) {
+      const isExtending = engine._velocityTracker.velocity > 0;
+
+      // The arm started lowering before reaching the contracted target.
+      if (phase === "CONTRACTING" && isExtending && a.primary > 55 && a.primary < 130) {
         return { type: "warning", msg: "Curl all the way up to finish the rep!" };
       }
 
-      // Error C: "If curlAngle drops but doesn't reach > 160 at the bottom..."
-      // (They are in "UP" phase trying to extend, but arm starts contracting again before reaching 160)
-      if (phase === "UP" && !this.isExtending && a.primary > 50 && a.primary < 160) {
+      // The arm started curling again before returning to the bottom.
+      if (phase === "EXTENDING" && !isExtending && a.primary > 55 && a.primary < 150) {
         return { type: "warning", msg: "Extend your arm fully at the bottom." };
       }
 
       // Contextual state feedback
-      if (phase === "UP") return { type: "good", msg: "Extend arm fully downward." };
-      if (phase === "DOWN") return { type: "good", msg: "Curl up for full contraction!" };
+      if (phase === "READY" || phase === "EXTENDING") return { type: "good", msg: "Extend arm fully downward." };
+      if (phase === "CONTRACTING") return { type: "good", msg: "Curl up for full contraction!" };
 
       return null;
     },
@@ -804,6 +839,8 @@ export class GymMetricEngine {
     this._cameraAngle = null;
     this._angleWarningShown = false;
     this._stabilityFailCount = 0;  // consecutive frames of stability failure
+    this._activeArm = null;
+    this._maxCycleSpeed = 0;
   }
 
   static get exerciseKeys() {
@@ -812,6 +849,21 @@ export class GymMetricEngine {
 
   static getProfile(key) {
     return EXERCISE_PROFILES[key] || null;
+  }
+
+  /** Landmark subset shown in the overlay for the selected exercise. */
+  static getDisplayLandmarks(key, activeArm = null) {
+    const profile = EXERCISE_PROFILES[key];
+    if (!profile) return [];
+
+    if (key === "bicep_curl") {
+      const torso = [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP];
+      if (activeArm === "left") return [...torso, LM.L_ELBOW, LM.L_WRIST];
+      if (activeArm === "right") return [...torso, LM.R_ELBOW, LM.R_WRIST];
+      return torso;
+    }
+
+    return profile.requiredLandmarks;
   }
 
   reset() {
@@ -832,6 +884,8 @@ export class GymMetricEngine {
     this._cameraAngle = null;
     this._angleWarningShown = false;
     this._stabilityFailCount = 0;
+    this._activeArm = null;
+    this._maxCycleSpeed = 0;
   }
 
   smoothPoint(idx, pt) {
@@ -842,6 +896,7 @@ export class GymMetricEngine {
     return {
       x: smoothed.x,
       y: smoothed.y,
+      z: pt.z,
       visibility: pt.visibility,
     };
   }
@@ -868,7 +923,13 @@ export class GymMetricEngine {
     const pts = [];
     // Only process landmarks relevant to the current exercise and camera tracking
     const cameraAngleIndices = [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP];
-    const indicesToProcess = new Set([...profile.requiredLandmarks, ...cameraAngleIndices]);
+    const alternativeGroups = profile.requiredLandmarkGroups || [];
+    const alternativeIndices = alternativeGroups.flat();
+    const indicesToProcess = new Set([
+      ...profile.requiredLandmarks,
+      ...alternativeIndices,
+      ...cameraAngleIndices,
+    ]);
     
     for (const idx of indicesToProcess) {
       if (landmarks[idx]) {
@@ -877,8 +938,11 @@ export class GymMetricEngine {
     }
 
     // ── Visibility gate ───────────────────────────────────
-    const allVisible = profile.requiredLandmarks.every(idx => vis(pts[idx]));
-    if (!allVisible) {
+    const allRequiredVisible = profile.requiredLandmarks.every(idx => vis(pts[idx]));
+    const oneAlternativeVisible = alternativeGroups.length === 0 || alternativeGroups.some(
+      (group) => group.every((idx) => vis(pts[idx]))
+    );
+    if (!allRequiredVisible || !oneAlternativeVisible) {
       return this._result(profile, "Can't see key joints — adjust your position", "warning");
     }
 
@@ -887,10 +951,11 @@ export class GymMetricEngine {
     const angleOk = profile.validateAngle ? profile.validateAngle(this._cameraAngle) : true;
 
     // ── Compute angles ────────────────────────────────────
-    const angles = profile.computeAngles(pts);
+    const angles = profile.computeAngles(pts, this);
 
     // ── Track velocity ────────────────────────────────────
     this._velocityTracker.push(angles.primary, timeSec);
+    this._maxCycleSpeed = Math.max(this._maxCycleSpeed, this._velocityTracker.speed);
 
     // ── Track ROM within current rep cycle ─────────────────
     if (this.peakAngle === null) {
@@ -922,12 +987,13 @@ export class GymMetricEngine {
           ? this.peakAngle - this.valleyAngle : 0;
         const hasMinROM = !profile.minROM || rom >= profile.minROM;
         const hasMinDuration = !profile.minRepDurationMs || repDuration >= profile.minRepDurationMs;
+        const hasMinVelocity = !profile.minVelocity || this._maxCycleSpeed >= profile.minVelocity;
         const hasMinFrames = this._noRepFrames >= 8;
         const stabilityResult = profile.stabilityChecks ? profile.stabilityChecks(angles) : { pass: true };
         const isAngleOk = angleOk;
 
         // All checks must pass to count the rep
-        if (hasMinROM && hasMinDuration && hasMinFrames && stabilityResult.pass && isAngleOk) {
+        if (hasMinROM && hasMinDuration && hasMinVelocity && hasMinFrames && stabilityResult.pass && isAngleOk) {
           this.repCount++;
           repJustCounted = true;
           this._noRepFrames = 0;
@@ -944,6 +1010,10 @@ export class GymMetricEngine {
             this._lastFeedback = { type: "warning", msg: "Partial rep — go through full range of motion" };
             this._feedbackCooldown = now + 1200;
           }
+          if (!hasMinVelocity) {
+            this._lastFeedback = { type: "warning", msg: "Move through the rep with control" };
+            this._feedbackCooldown = now + 1200;
+          }
           if (!isAngleOk) {
             this._lastFeedback = { type: "info", msg: profile.angleHint || "Adjust camera angle" };
             this._feedbackCooldown = now + 1500;
@@ -955,6 +1025,7 @@ export class GymMetricEngine {
         this.repCycleStartedAt = now;
         this.peakAngle = angles.primary;
         this.valleyAngle = angles.primary;
+        this._maxCycleSpeed = 0;
       } else if (nextPhase !== "COMPLETE") {
         this.currentPhase = nextPhase;
       }
@@ -980,7 +1051,7 @@ export class GymMetricEngine {
     }
 
     // ── Form feedback ─────────────────────────────────────
-    let feedbackResult = profile.checkForm(angles, this.currentPhase, this._cameraAngle);
+    let feedbackResult = profile.checkForm(angles, this.currentPhase, this._cameraAngle, this);
 
     if (feedbackResult !== null && feedbackResult !== undefined) {
       this._lastFeedback = feedbackResult;
@@ -1000,6 +1071,7 @@ export class GymMetricEngine {
       phase: this.currentPhase,
       cameraAngle: this._cameraAngle ? this._cameraAngle.viewAngle : null,
       angleOk,
+      activeArm: this._activeArm,
     };
   }
 
@@ -1013,6 +1085,7 @@ export class GymMetricEngine {
       phase: this.currentPhase || "",
       cameraAngle: this._cameraAngle ? this._cameraAngle.viewAngle : null,
       angleOk: true,
+      activeArm: this._activeArm,
     };
   }
 }

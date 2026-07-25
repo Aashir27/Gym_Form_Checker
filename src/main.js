@@ -29,6 +29,25 @@ const btnZoomIn = document.getElementById("btn-zoom-in");
 const btnZoomOut = document.getElementById("btn-zoom-out");
 const zoomControls = document.getElementById("zoom-controls");
 
+/**
+ * Keep the drawing buffer aligned with the element's displayed size. The
+ * camera frame itself is projected in drawSkeleton() using the same
+ * object-fit: cover calculation as the video element.
+ */
+function resizeOverlay() {
+  const bounds = canvasEl.getBoundingClientRect();
+  const pixelRatio = window.devicePixelRatio || 1;
+  const width = Math.round(bounds.width * pixelRatio);
+  const height = Math.round(bounds.height * pixelRatio);
+
+  if (canvasEl.width !== width || canvasEl.height !== height) {
+    canvasEl.width = width;
+    canvasEl.height = height;
+  }
+}
+
+new ResizeObserver(resizeOverlay).observe(videoWrapper);
+
 // Skeleton connections for drawing (MediaPipe Pose 33 landmarks)
 const POSE_CONNECTIONS = [
   [0, 1], [1, 2], [2, 3], [3, 7],
@@ -141,8 +160,7 @@ async function startCamera(facingMode = "user") {
 
   return new Promise((resolve) => {
     videoEl.onloadeddata = () => {
-      canvasEl.width = videoEl.videoWidth;
-      canvasEl.height = videoEl.videoHeight;
+      resizeOverlay();
       resolve();
     };
   });
@@ -172,13 +190,24 @@ btnZoomOut.addEventListener("click", () => {
 });
 
 // ─── Draw Skeleton ────────────────────────────────────────
-function drawSkeleton(landmarks) {
+function drawSkeleton(landmarks, displayedLandmarks) {
   ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
 
-  if (!landmarks || landmarks.length === 0) return;
+  if (!landmarks || landmarks.length === 0 || !videoEl.videoWidth || !videoEl.videoHeight) return;
 
-  const w = canvasEl.width;
-  const h = canvasEl.height;
+  const visible = new Set(displayedLandmarks);
+  const videoScale = Math.max(
+    canvasEl.width / videoEl.videoWidth,
+    canvasEl.height / videoEl.videoHeight
+  );
+  const renderedVideoWidth = videoEl.videoWidth * videoScale;
+  const renderedVideoHeight = videoEl.videoHeight * videoScale;
+  const offsetX = (canvasEl.width - renderedVideoWidth) / 2;
+  const offsetY = (canvasEl.height - renderedVideoHeight) / 2;
+  const project = (point) => ({
+    x: offsetX + point.x * renderedVideoWidth,
+    y: offsetY + point.y * renderedVideoHeight,
+  });
   const baseColor = colorPicker.value;
 
   // Draw connections
@@ -187,21 +216,24 @@ function drawSkeleton(landmarks) {
   ctx.lineCap = "round";
 
   for (const [i, j] of POSE_CONNECTIONS) {
+    if (!visible.has(i) || !visible.has(j)) continue;
     const a = landmarks[i];
     const b = landmarks[j];
     if (a.visibility < 0.5 || b.visibility < 0.5) continue;
+    const start = project(a);
+    const end = project(b);
     ctx.beginPath();
-    ctx.moveTo(a.x * w, a.y * h);
-    ctx.lineTo(b.x * w, b.y * h);
+    ctx.moveTo(start.x, start.y);
+    ctx.lineTo(end.x, end.y);
     ctx.stroke();
   }
 
   // Draw keypoints
   for (let i = 0; i < landmarks.length; i++) {
+    if (!visible.has(i)) continue;
     const lm = landmarks[i];
     if (lm.visibility < 0.5) continue;
-    const x = lm.x * w;
-    const y = lm.y * h;
+    const { x, y } = project(lm);
 
     // Outer glow
     ctx.beginPath();
@@ -244,12 +276,16 @@ function detectFrame() {
   if (result.landmarks && result.landmarks.length > 0) {
     const landmarks = result.landmarks[0];
 
-    // Draw skeleton
-    drawSkeleton(landmarks);
-
     // Evaluate with engine
     const activeExercise = exerciseSelect.value;
     const evaluation = engine.evaluateFrame(landmarks, activeExercise);
+
+    // Draw only joints used by the selected exercise. This makes the overlay
+    // easier to read and avoids presenting unrelated limbs as active inputs.
+    drawSkeleton(
+      landmarks,
+      GymMetricEngine.getDisplayLandmarks(activeExercise, evaluation.activeArm)
+    );
 
     // Update rep count or hold time
     if (evaluation.holdTime !== null) {
