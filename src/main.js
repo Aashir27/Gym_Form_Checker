@@ -108,7 +108,7 @@ async function initPoseLandmarker() {
   poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
     baseOptions: {
       modelAssetPath:
-        "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task",
+        "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task",
       delegate: "GPU",
     },
     runningMode: "VIDEO",
@@ -297,7 +297,10 @@ function detectFrame() {
     // Update phase indicator
     if (phaseIndicatorEl && evaluation.phase) {
       const phaseLabel = evaluation.phase.replace(/_/g, " ").toLowerCase();
-      phaseIndicatorEl.textContent = phaseLabel;
+      const curlAngle = activeExercise === "bicep_curl" && Number.isFinite(evaluation.primaryAngle)
+        ? ` · ${evaluation.primaryAngle}°`
+        : "";
+      phaseIndicatorEl.textContent = phaseLabel + curlAngle;
     }
 
     // Update camera angle indicator

@@ -130,10 +130,12 @@ function detectCameraAngle(pts) {
   const torsoHeight = dist(mid(lSh, rSh), mid(lHip, rHip));
   const ratio = torsoHeight > 0.01 ? shoulderWidth / torsoHeight : 0.5;
 
-  // Typical ratios: front ~0.7-1.0, angled ~0.3-0.7, side <0.3
+  // A literal profile view is rarely a perfect 90° turn in a real webcam.
+  // This deliberately accepts a slight three-quarter turn as "side" so a
+  // valid curl is not rejected merely because one shoulder is a little ahead.
   let viewAngle;
-  if (ratio < 0.25) viewAngle = "side";
-  else if (ratio < 0.55) viewAngle = "angled";
+  if (ratio < 0.45) viewAngle = "side";
+  else if (ratio < 0.85) viewAngle = "angled";
   else viewAngle = "front";
 
   // Body orientation: is the person lying down / in plank position?
@@ -352,14 +354,16 @@ const EXERCISE_PROFILES = {
       return { primary: curlAngle, driftAngle, activeArm };
     },
 
-    // Start at the bottom, curl to the top, then return to the bottom. The
-    // thresholds leave room for unavoidable 2D pose-estimation error.
+    // Start at the bottom, curl to the top, then return to the bottom. These
+    // are intentionally tolerant: a webcam's 2D elbow angle is an estimate,
+    // so requiring a textbook 0°/180° curl makes normal reps fail.
     phases: ["READY", "CONTRACTING", "EXTENDING", "COMPLETE"],
     thresholds: {},
-    minTransitionMs: 100,
-    minROM: 80,
-    minRepDurationMs: 600,
-    minVelocity: 12,
+    minTransitionMs: 80,
+    minROM: 65,
+    minRepDurationMs: 450,
+    minVelocity: 0,
+    minRepFrames: 4,
 
     validateAngle(cam) {
       return cam.viewAngle === "side";
@@ -368,11 +372,11 @@ const EXERCISE_PROFILES = {
     transitionRules(a, phase) {
       switch (phase) {
         case "READY":
-          return a.primary > 150 ? "CONTRACTING" : null;
+          return a.primary > 140 ? "CONTRACTING" : null;
         case "CONTRACTING":
-          return a.primary < 55 ? "EXTENDING" : null;
+          return a.primary < 75 ? "EXTENDING" : null;
         case "EXTENDING":
-          return a.primary > 150 ? "COMPLETE" : null;
+          return a.primary > 140 ? "COMPLETE" : null;
         default: return null;
       }
     },
@@ -386,22 +390,15 @@ const EXERCISE_PROFILES = {
         return { type: "info", msg: this.angleHint };
       }
       
-      // 4. Specific Form Error Conditions
-
-      // Error A: "If the user is mid-rep and driftAngle > 30..."
-      if (a.driftAngle > 30) {
-        return { type: "warning", msg: "Keep your elbow tucked at your side! Don't swing your arm." };
-      }
-
       const isExtending = engine._velocityTracker.velocity > 0;
 
       // The arm started lowering before reaching the contracted target.
-      if (phase === "CONTRACTING" && isExtending && a.primary > 55 && a.primary < 130) {
+      if (phase === "CONTRACTING" && isExtending && a.primary > 75 && a.primary < 125) {
         return { type: "warning", msg: "Curl all the way up to finish the rep!" };
       }
 
       // The arm started curling again before returning to the bottom.
-      if (phase === "EXTENDING" && !isExtending && a.primary > 55 && a.primary < 150) {
+      if (phase === "EXTENDING" && !isExtending && a.primary > 75 && a.primary < 140) {
         return { type: "warning", msg: "Extend your arm fully at the bottom." };
       }
 
@@ -988,7 +985,7 @@ export class GymMetricEngine {
         const hasMinROM = !profile.minROM || rom >= profile.minROM;
         const hasMinDuration = !profile.minRepDurationMs || repDuration >= profile.minRepDurationMs;
         const hasMinVelocity = !profile.minVelocity || this._maxCycleSpeed >= profile.minVelocity;
-        const hasMinFrames = this._noRepFrames >= 8;
+        const hasMinFrames = this._noRepFrames >= (profile.minRepFrames ?? 4);
         const stabilityResult = profile.stabilityChecks ? profile.stabilityChecks(angles) : { pass: true };
         const isAngleOk = angleOk;
 
@@ -1072,6 +1069,7 @@ export class GymMetricEngine {
       cameraAngle: this._cameraAngle ? this._cameraAngle.viewAngle : null,
       angleOk,
       activeArm: this._activeArm,
+      primaryAngle: Math.round(angles.primary),
     };
   }
 
@@ -1086,6 +1084,7 @@ export class GymMetricEngine {
       cameraAngle: this._cameraAngle ? this._cameraAngle.viewAngle : null,
       angleOk: true,
       activeArm: this._activeArm,
+      primaryAngle: null,
     };
   }
 }
