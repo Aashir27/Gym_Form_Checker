@@ -1,4 +1,4 @@
-import { PoseLandmarker, FilesetResolver, DrawingUtils } from "@mediapipe/tasks-vision";
+import { PoseLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
 import { GymMetricEngine } from "./engine.js";
 
 // ─── DOM Elements ──────────────────────────────────────────
@@ -6,10 +6,12 @@ const videoEl = document.getElementById("webcam");
 const canvasEl = document.getElementById("overlay");
 const ctx = canvasEl.getContext("2d");
 const repCountEl = document.getElementById("rep-count");
+const repLabelEl = document.getElementById("rep-label");
 const feedbackEl = document.getElementById("form-feedback");
 const exerciseSelect = document.getElementById("exercise-select");
 const colorPicker = document.getElementById("skeleton-color");
 const loadingOverlay = document.getElementById("loading-overlay");
+const phaseIndicatorEl = document.getElementById("phase-indicator");
 
 // ─── State ─────────────────────────────────────────────────
 let poseLandmarker = null;
@@ -42,15 +44,36 @@ const POSE_CONNECTIONS = [
   [24, 26], [26, 28], [28, 30], [28, 32], [30, 32],
 ];
 
+// ─── Populate exercise selector from engine profiles ──────
+function populateExerciseSelect() {
+  exerciseSelect.innerHTML = "";
+  for (const key of GymMetricEngine.exerciseKeys) {
+    const profile = GymMetricEngine.getProfile(key);
+    const option = document.createElement("option");
+    option.value = key;
+    option.textContent = profile.label;
+    exerciseSelect.appendChild(option);
+  }
+}
+populateExerciseSelect();
+
 // ─── Reset engine on exercise change ──────────────────────
 exerciseSelect.addEventListener("change", () => {
-  engine.repCount = 0;
-  engine.state = "START";
-  engine.filters = {};
+  engine.reset();
   repCountEl.textContent = "0";
-  feedbackEl.textContent = "Switched — start moving!";
+  updateRepLabel();
+  feedbackEl.textContent = "Switched — get into position!";
   feedbackEl.className = "value has-good";
+  if (phaseIndicatorEl) phaseIndicatorEl.textContent = "";
 });
+
+/** Update the rep/hold label based on current exercise type. */
+function updateRepLabel() {
+  if (!repLabelEl) return;
+  const profile = GymMetricEngine.getProfile(exerciseSelect.value);
+  repLabelEl.textContent = profile && profile.type === "hold" ? "Hold Time" : "Reps";
+}
+updateRepLabel();
 
 // ─── Initialize MediaPipe PoseLandmarker ──────────────────
 async function initPoseLandmarker() {
@@ -76,7 +99,6 @@ async function initPoseLandmarker() {
 
 // ─── Update View Transform ──────────────────────────────────
 function updateViewTransform() {
-  // Front camera needs mirroring (scaleX(-1))
   if (currentFacingMode === "user") {
     videoWrapper.style.transform = `scaleX(-1) scale(${currentZoom})`;
   } else {
@@ -91,10 +113,9 @@ async function startCamera(facingMode = "user") {
   }
 
   currentFacingMode = facingMode;
-  currentZoom = 1; // Reset zoom on camera switch
+  currentZoom = 1;
   updateViewTransform();
 
-  // Show zoom controls only for back camera (optional, but good UX)
   if (currentFacingMode === "environment") {
     zoomControls.classList.add("active");
   } else {
@@ -102,14 +123,14 @@ async function startCamera(facingMode = "user") {
   }
 
   const stream = await navigator.mediaDevices.getUserMedia({
-    video: { 
-      width: { ideal: 1920, min: 1280 }, 
-      height: { ideal: 1080, min: 720 }, 
-      facingMode: currentFacingMode 
+    video: {
+      width: { ideal: 1920, min: 1280 },
+      height: { ideal: 1080, min: 720 },
+      facingMode: currentFacingMode,
     },
     audio: false,
   });
-  
+
   currentStream = stream;
   videoEl.srcObject = stream;
 
@@ -153,10 +174,10 @@ function drawSkeleton(landmarks) {
 
   const w = canvasEl.width;
   const h = canvasEl.height;
-  const baseColor = colorPicker.value; // e.g. "#6c5ce7"
+  const baseColor = colorPicker.value;
 
   // Draw connections
-  ctx.strokeStyle = baseColor + "b3"; // 70% opacity
+  ctx.strokeStyle = baseColor + "b3";
   ctx.lineWidth = 3;
   ctx.lineCap = "round";
 
@@ -180,7 +201,7 @@ function drawSkeleton(landmarks) {
     // Outer glow
     ctx.beginPath();
     ctx.arc(x, y, 6, 0, 2 * Math.PI);
-    ctx.fillStyle = baseColor + "4d"; // ~30% opacity
+    ctx.fillStyle = baseColor + "4d";
     ctx.fill();
 
     // Inner dot
@@ -189,6 +210,13 @@ function drawSkeleton(landmarks) {
     ctx.fillStyle = baseColor;
     ctx.fill();
   }
+}
+
+/** Format seconds into mm:ss display. */
+function formatHoldTime(seconds) {
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
 
 // ─── Detection Loop ───────────────────────────────────────
@@ -218,12 +246,27 @@ function detectFrame() {
     const activeExercise = exerciseSelect.value;
     const evaluation = engine.evaluateFrame(landmarks, activeExercise);
 
-    // Update UI
-    repCountEl.textContent = evaluation.reps;
+    // Update rep count or hold time
+    if (evaluation.holdTime !== null) {
+      repCountEl.textContent = formatHoldTime(evaluation.holdTime);
+    } else {
+      repCountEl.textContent = evaluation.reps;
+    }
 
+    // Update phase indicator
+    if (phaseIndicatorEl && evaluation.phase) {
+      const phaseLabel = evaluation.phase.replace(/_/g, " ").toLowerCase();
+      phaseIndicatorEl.textContent = phaseLabel;
+    }
+
+    // Update feedback with type-aware styling
     if (evaluation.feedback && evaluation.feedback.length > 0) {
       feedbackEl.textContent = evaluation.feedback;
-      feedbackEl.className = "value has-warning";
+      if (evaluation.feedbackType === "warning") {
+        feedbackEl.className = "value has-warning";
+      } else {
+        feedbackEl.className = "value has-good";
+      }
     } else {
       feedbackEl.textContent = "Good form — keep going! 💪";
       feedbackEl.className = "value has-good";

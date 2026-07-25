@@ -402,6 +402,27 @@
       text-shadow: 0 0 20px var(--success-glow);
     }
 
+    /* ─── Phase Indicator ──────────────────────────────────── */
+    .phase-indicator {
+      display: inline-block;
+      margin-top: 10px;
+      padding: 5px 14px;
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.8px;
+      color: var(--accent);
+      background: rgba(108, 92, 231, 0.12);
+      border: 1px solid rgba(108, 92, 231, 0.2);
+      border-radius: 20px;
+      min-height: 1.4em;
+      transition: var(--transition);
+    }
+
+    .phase-indicator:empty {
+      display: none;
+    }
+
     /* ─── Footer ─────────────────────────────────────────── */
     footer {
       position: relative;
@@ -449,6 +470,12 @@
         <select id="exercise-select">
           <option value="squat">Squat</option>
           <option value="bicep_curl">Bicep Curl</option>
+          <option value="push_up">Push-Up</option>
+          <option value="reverse_lunge">Reverse Lunge</option>
+          <option value="glute_bridge">Glute Bridge</option>
+          <option value="dead_bug">Dead Bug</option>
+          <option value="plank">Plank</option>
+          <option value="mountain_climber">Mountain Climber</option>
         </select>
       </div>
     </div>
@@ -476,12 +503,13 @@
 
     <div class="stats-row">
       <div class="stat-card">
-        <div class="label">Reps</div>
+        <div class="label" id="rep-label">Reps</div>
         <div class="value" id="rep-count">0</div>
       </div>
       <div class="stat-card feedback-card">
         <div class="label">Form Feedback</div>
         <div class="value has-good" id="form-feedback">Waiting for camera…</div>
+        <div class="phase-indicator" id="phase-indicator"></div>
       </div>
     </div>
   </main>
