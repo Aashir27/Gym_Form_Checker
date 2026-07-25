@@ -12,6 +12,7 @@ const exerciseSelect = document.getElementById("exercise-select");
 const colorPicker = document.getElementById("skeleton-color");
 const loadingOverlay = document.getElementById("loading-overlay");
 const phaseIndicatorEl = document.getElementById("phase-indicator");
+const angleIndicatorEl = document.getElementById("angle-indicator");
 
 // ─── State ─────────────────────────────────────────────────
 let poseLandmarker = null;
@@ -65,6 +66,10 @@ exerciseSelect.addEventListener("change", () => {
   feedbackEl.textContent = "Switched — get into position!";
   feedbackEl.className = "value has-good";
   if (phaseIndicatorEl) phaseIndicatorEl.textContent = "";
+  if (angleIndicatorEl) {
+    angleIndicatorEl.textContent = "";
+    angleIndicatorEl.className = "angle-indicator";
+  }
 });
 
 /** Update the rep/hold label based on current exercise type. */
@@ -257,6 +262,20 @@ function detectFrame() {
     if (phaseIndicatorEl && evaluation.phase) {
       const phaseLabel = evaluation.phase.replace(/_/g, " ").toLowerCase();
       phaseIndicatorEl.textContent = phaseLabel;
+    }
+
+    // Update camera angle indicator
+    if (angleIndicatorEl && evaluation.cameraAngle) {
+      const angleLabel = "Angle: " + evaluation.cameraAngle;
+      angleIndicatorEl.textContent = angleLabel;
+      if (evaluation.angleOk) {
+        angleIndicatorEl.className = "angle-indicator is-ok";
+      } else {
+        angleIndicatorEl.className = "angle-indicator is-bad";
+      }
+    } else if (angleIndicatorEl) {
+      angleIndicatorEl.textContent = "";
+      angleIndicatorEl.className = "angle-indicator";
     }
 
     // Update feedback with type-aware styling

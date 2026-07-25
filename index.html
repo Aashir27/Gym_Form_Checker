@@ -402,10 +402,16 @@
       text-shadow: 0 0 20px var(--success-glow);
     }
 
-    /* ─── Phase Indicator ──────────────────────────────────── */
+    /* ─── Indicators ──────────────────────────────────── */
+    .indicators {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+      flex-wrap: wrap;
+    }
+
     .phase-indicator {
       display: inline-block;
-      margin-top: 10px;
       padding: 5px 14px;
       font-size: 0.65rem;
       font-weight: 700;
@@ -420,6 +426,34 @@
     }
 
     .phase-indicator:empty {
+      display: none;
+    }
+
+    .angle-indicator {
+      display: inline-block;
+      padding: 5px 14px;
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.8px;
+      border-radius: 20px;
+      min-height: 1.4em;
+      transition: var(--transition);
+    }
+    
+    .angle-indicator.is-ok {
+      color: var(--success);
+      background: rgba(0, 230, 118, 0.12);
+      border: 1px solid rgba(0, 230, 118, 0.2);
+    }
+    
+    .angle-indicator.is-bad {
+      color: var(--warning);
+      background: rgba(255, 171, 64, 0.12);
+      border: 1px solid rgba(255, 171, 64, 0.2);
+    }
+    
+    .angle-indicator:empty {
       display: none;
     }
 
@@ -509,7 +543,10 @@
       <div class="stat-card feedback-card">
         <div class="label">Form Feedback</div>
         <div class="value has-good" id="form-feedback">Waiting for camera…</div>
-        <div class="phase-indicator" id="phase-indicator"></div>
+        <div class="indicators">
+          <div class="phase-indicator" id="phase-indicator"></div>
+          <div class="angle-indicator" id="angle-indicator"></div>
+        </div>
       </div>
     </div>
   </main>
