@@ -293,56 +293,56 @@ const EXERCISE_PROFILES = {
     requiredLandmarks: [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_ELBOW, LM.R_ELBOW, LM.L_WRIST, LM.R_WRIST, LM.L_HIP, LM.R_HIP],
 
     computeAngles(p) {
-      const lElbow = calculateAngle(p[LM.L_SHOULDER], p[LM.L_ELBOW], p[LM.L_WRIST]);
-      const rElbow = calculateAngle(p[LM.R_SHOULDER], p[LM.R_ELBOW], p[LM.R_WRIST]);
-      // Use the arm with the tighter (more curled) angle as primary
-      const primary = Math.min(lElbow, rElbow);
-      const secondary = Math.max(lElbow, rElbow);
-      // Upper arm swing (shoulder angle) — upper arm should stay pinned to side
-      const lSwing = calculateAngle(p[LM.L_HIP], p[LM.L_SHOULDER], p[LM.L_ELBOW]);
-      const rSwing = calculateAngle(p[LM.R_HIP], p[LM.R_SHOULDER], p[LM.R_ELBOW]);
-      const shoulderSwing = Math.min(lSwing, rSwing);
-      // Torso lean — swinging body to cheat the curl
-      const torsoTilt = Math.abs(tiltFromVertical(
-        mid(p[LM.L_HIP], p[LM.R_HIP]),
-        mid(p[LM.L_SHOULDER], p[LM.R_SHOULDER])
-      ));
-      // Wrist vertical travel — real curl has significant y-change
-      const wristY = Math.min(p[LM.L_WRIST].y, p[LM.R_WRIST].y);
-      const shoulderY = (p[LM.L_SHOULDER].y + p[LM.R_SHOULDER].y) / 2;
-      const wristToShoulder = (shoulderY - wristY) * 100; // positive when wrist is above shoulder level
-      return { primary, secondary, shoulderSwing, torsoTilt, wristToShoulder };
+      // 1. Dynamic Arm Visibility Picker (The Orientation Fix)
+      const lVis = (p[LM.L_SHOULDER]?.visibility || 0) + (p[LM.L_ELBOW]?.visibility || 0) + (p[LM.L_WRIST]?.visibility || 0);
+      const rVis = (p[LM.R_SHOULDER]?.visibility || 0) + (p[LM.R_ELBOW]?.visibility || 0) + (p[LM.R_WRIST]?.visibility || 0);
+      const activeArm = lVis > rVis ? 'left' : 'right';
+
+      // 2. Scale-Invariant Joint Angle Tracking (The Distance Fix)
+      let curlAngle, driftAngle;
+      if (activeArm === 'left') {
+        curlAngle = calculateAngle(p[LM.L_SHOULDER], p[LM.L_ELBOW], p[LM.L_WRIST]);
+        driftAngle = calculateAngle(p[LM.L_HIP], p[LM.L_SHOULDER], p[LM.L_ELBOW]);
+      } else {
+        curlAngle = calculateAngle(p[LM.R_SHOULDER], p[LM.R_ELBOW], p[LM.R_WRIST]);
+        driftAngle = calculateAngle(p[LM.R_HIP], p[LM.R_SHOULDER], p[LM.R_ELBOW]);
+      }
+
+      // Track direction locally for error conditions
+      if (!this.lastAngle) this.lastAngle = curlAngle;
+      this.isExtending = curlAngle > this.lastAngle;
+      this.lastAngle = curlAngle;
+
+      return { primary: curlAngle, driftAngle };
     },
 
-    phases: ["READY", "CURLING", "TOP", "LOWERING", "COMPLETE"],
-    thresholds: { startExtended: 145, enterTop: 50, leaveTop: 70, extendBack: 145 },
-    minTransitionMs: 200,
-    minROM: 80,             // must curl at least 80° arc
-    minRepDurationMs: 1000, // a real curl takes >1s
-    minVelocity: 20,        // deg/s
+    // 3. Two-State Repetition Engine (The Count Fix)
+    // Map user's stage "up"/"down" to our engine's phases:
+    // UP (waiting for > 160) -> DOWN (waiting for < 35) -> COMPLETE (increments rep, sets back to UP)
+    phases: ["UP", "UP", "DOWN", "COMPLETE"],
+    thresholds: {},
+    minTransitionMs: 0,
+    minROM: 0,
+    minRepDurationMs: 0,
+    minVelocity: 0,
 
     validateAngle(cam) {
-      // Side/angled views show the elbow flexion plane clearly.
-      // Front view makes elbows overlap with torso → unreliable.
       return cam.viewAngle === "side" || cam.viewAngle === "angled";
     },
 
     transitionRules(a, phase) {
-      const t = this.thresholds;
       switch (phase) {
-        case "READY":    return a.primary > t.startExtended ? "CURLING" : null;
-        case "CURLING":  return a.primary < t.enterTop ? "TOP" : null;
-        case "TOP":      return a.primary > t.leaveTop ? "LOWERING" : null;
-        case "LOWERING": return a.primary > t.extendBack ? "COMPLETE" : null;
+        case "UP":
+          // "When curlAngle > 160, the arm is fully extended. Set stage = 'down'."
+          return a.primary > 160 ? "DOWN" : null;
+        case "DOWN":
+          // "When curlAngle < 35 AND stage === 'down', increment rep and flip stage = 'up'."
+          return a.primary < 35 ? "COMPLETE" : null;
         default: return null;
       }
     },
 
     stabilityChecks(a) {
-      // Reject if torso is swinging heavily (momentum cheat)
-      if (a.torsoTilt > 25) return { pass: false, reason: "Too much body swing — control the weight" };
-      // Reject if upper arm is flailing (front raise, not a curl)
-      if (a.shoulderSwing > 60) return { pass: false, reason: "Arm swinging — keep elbow pinned to side" };
       return { pass: true };
     },
 
@@ -350,12 +350,30 @@ const EXERCISE_PROFILES = {
       if (cam && !this.validateAngle(cam)) {
         return { type: "info", msg: this.angleHint };
       }
-      if (a.torsoTilt > 18)               return { type: "warning", msg: "Don't lean back — keep torso upright" };
-      if (a.shoulderSwing > 50)            return { type: "warning", msg: "Keep elbows tucked — no swinging" };
-      if (phase === "TOP" && a.primary > 60) return { type: "warning", msg: "Curl higher — full contraction" };
-      if (phase === "TOP" && a.primary <= 50) return { type: "good", msg: "Great squeeze at the top 💪" };
-      if (phase === "LOWERING")            return { type: "good", msg: "Control the negative — slow down" };
-      if (phase === "READY")               return { type: "good", msg: "Arms extended — ready to curl" };
+      
+      // 4. Specific Form Error Conditions
+
+      // Error A: "If the user is mid-rep and driftAngle > 30..."
+      if (a.driftAngle > 30) {
+        return { type: "warning", msg: "Keep your elbow tucked at your side! Don't swing your arm." };
+      }
+
+      // Error B: "If the user reverses direction and goes back down before hitting the < 35 contraction target..."
+      // (They are in "DOWN" phase trying to contract, but arm starts extending again before reaching 35)
+      if (phase === "DOWN" && this.isExtending && a.primary > 35 && a.primary < 130) {
+        return { type: "warning", msg: "Curl all the way up to finish the rep!" };
+      }
+
+      // Error C: "If curlAngle drops but doesn't reach > 160 at the bottom..."
+      // (They are in "UP" phase trying to extend, but arm starts contracting again before reaching 160)
+      if (phase === "UP" && !this.isExtending && a.primary > 50 && a.primary < 160) {
+        return { type: "warning", msg: "Extend your arm fully at the bottom." };
+      }
+
+      // Contextual state feedback
+      if (phase === "UP") return { type: "good", msg: "Extend arm fully downward." };
+      if (phase === "DOWN") return { type: "good", msg: "Curl up for full contraction!" };
+
       return null;
     },
   },
