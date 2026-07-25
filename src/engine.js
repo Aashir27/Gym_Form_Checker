@@ -1,36 +1,25 @@
 /**
- * OneEuroFilter — low-pass filter for real-time signal smoothing.
- * Reduces jitter in landmark coordinates while preserving fast movements.
+ * EMAFilter — Exponential Moving Average for low-pass jitter smoothing.
+ * Rock-steady smoothing with minimal overhead.
  */
-export class OneEuroFilter {
-  constructor(minCutoff = 1.0, beta = 0.007, dcutoff = 1.0) {
-    this.minCutoff = minCutoff;
-    this.beta = beta;
-    this.dcutoff = dcutoff;
+export class EMAFilter {
+  constructor(alpha = 0.5) {
+    this.alpha = alpha;
     this.xPrev = null;
-    this.dxPrev = null;
-    this.tPrev = null;
+    this.yPrev = null;
   }
 
-  filter(x, t) {
-    if (this.xPrev === null) {
+  filter(x, y) {
+    if (this.xPrev === null || this.yPrev === null) {
       this.xPrev = x;
-      this.tPrev = t;
-      this.dxPrev = 0;
-      return x;
+      this.yPrev = y;
+      return { x, y };
     }
-    const te = t - this.tPrev;
-    if (te <= 0) return this.xPrev;
-    const alphaD = 1.0 / (1.0 + 1.0 / (2.0 * Math.PI * this.dcutoff * te));
-    const dx = (x - this.xPrev) / te;
-    const dxHat = alphaD * dx + (1.0 - alphaD) * this.dxPrev;
-    const cutoff = this.minCutoff + this.beta * Math.abs(dxHat);
-    const alpha = 1.0 / (1.0 + 1.0 / (2.0 * Math.PI * cutoff * te));
-    const xHat = alpha * x + (1.0 - alpha) * this.xPrev;
+    const xHat = (this.alpha * x) + ((1 - this.alpha) * this.xPrev);
+    const yHat = (this.alpha * y) + ((1 - this.alpha) * this.yPrev);
     this.xPrev = xHat;
-    this.dxPrev = dxHat;
-    this.tPrev = t;
-    return xHat;
+    this.yPrev = yHat;
+    return { x: xHat, y: yHat };
   }
 }
 
@@ -69,14 +58,17 @@ const LM = {
  * Geometry helpers
  * ────────────────────────────────────────────────────────────── */
 
-/** Angle at vertex b formed by segments b→a and b→c, in degrees [0,180]. */
-function angleDeg(a, b, c) {
-  const v1x = a.x - b.x, v1y = a.y - b.y;
-  const v2x = c.x - b.x, v2y = c.y - b.y;
-  const dot = v1x * v2x + v1y * v2y;
-  const mag = Math.hypot(v1x, v1y) * Math.hypot(v2x, v2y);
-  if (mag === 0) return 0;
-  return Math.acos(Math.max(-1, Math.min(1, dot / mag))) * (180 / Math.PI);
+/** 
+ * Scale-Invariant Vector Math using Math.atan2.
+ * Calculates absolute internal angle between 0 and 180 degrees.
+ */
+export function calculateAngle(a, b, c) {
+  let radians = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
+  let angle = Math.abs(radians * (180.0 / Math.PI));
+  if (angle > 180.0) {
+    angle = 360.0 - angle;
+  }
+  return angle;
 }
 
 /** Signed tilt of segment a→b from vertical (positive = tilted right). */
@@ -219,10 +211,10 @@ const EXERCISE_PROFILES = {
     requiredLandmarks: [LM.L_HIP, LM.R_HIP, LM.L_KNEE, LM.R_KNEE, LM.L_ANKLE, LM.R_ANKLE, LM.L_SHOULDER, LM.R_SHOULDER],
 
     computeAngles(p) {
-      const lKnee = angleDeg(p[LM.L_HIP], p[LM.L_KNEE], p[LM.L_ANKLE]);
-      const rKnee = angleDeg(p[LM.R_HIP], p[LM.R_KNEE], p[LM.R_ANKLE]);
-      const lHip  = angleDeg(p[LM.L_SHOULDER], p[LM.L_HIP], p[LM.L_KNEE]);
-      const rHip  = angleDeg(p[LM.R_SHOULDER], p[LM.R_HIP], p[LM.R_KNEE]);
+      const lKnee = calculateAngle(p[LM.L_HIP], p[LM.L_KNEE], p[LM.L_ANKLE]);
+      const rKnee = calculateAngle(p[LM.R_HIP], p[LM.R_KNEE], p[LM.R_ANKLE]);
+      const lHip  = calculateAngle(p[LM.L_SHOULDER], p[LM.L_HIP], p[LM.L_KNEE]);
+      const rHip  = calculateAngle(p[LM.R_SHOULDER], p[LM.R_HIP], p[LM.R_KNEE]);
       const torsoTilt = Math.abs(tiltFromVertical(
         mid(p[LM.L_HIP], p[LM.R_HIP]),
         mid(p[LM.L_SHOULDER], p[LM.R_SHOULDER])
@@ -301,14 +293,14 @@ const EXERCISE_PROFILES = {
     requiredLandmarks: [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_ELBOW, LM.R_ELBOW, LM.L_WRIST, LM.R_WRIST, LM.L_HIP, LM.R_HIP],
 
     computeAngles(p) {
-      const lElbow = angleDeg(p[LM.L_SHOULDER], p[LM.L_ELBOW], p[LM.L_WRIST]);
-      const rElbow = angleDeg(p[LM.R_SHOULDER], p[LM.R_ELBOW], p[LM.R_WRIST]);
+      const lElbow = calculateAngle(p[LM.L_SHOULDER], p[LM.L_ELBOW], p[LM.L_WRIST]);
+      const rElbow = calculateAngle(p[LM.R_SHOULDER], p[LM.R_ELBOW], p[LM.R_WRIST]);
       // Use the arm with the tighter (more curled) angle as primary
       const primary = Math.min(lElbow, rElbow);
       const secondary = Math.max(lElbow, rElbow);
       // Upper arm swing (shoulder angle) — upper arm should stay pinned to side
-      const lSwing = angleDeg(p[LM.L_HIP], p[LM.L_SHOULDER], p[LM.L_ELBOW]);
-      const rSwing = angleDeg(p[LM.R_HIP], p[LM.R_SHOULDER], p[LM.R_ELBOW]);
+      const lSwing = calculateAngle(p[LM.L_HIP], p[LM.L_SHOULDER], p[LM.L_ELBOW]);
+      const rSwing = calculateAngle(p[LM.R_HIP], p[LM.R_SHOULDER], p[LM.R_ELBOW]);
       const shoulderSwing = Math.min(lSwing, rSwing);
       // Torso lean — swinging body to cheat the curl
       const torsoTilt = Math.abs(tiltFromVertical(
@@ -381,12 +373,12 @@ const EXERCISE_PROFILES = {
     requiredLandmarks: [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_ELBOW, LM.R_ELBOW, LM.L_WRIST, LM.R_WRIST, LM.L_HIP, LM.R_HIP, LM.L_ANKLE, LM.R_ANKLE],
 
     computeAngles(p) {
-      const lElbow = angleDeg(p[LM.L_SHOULDER], p[LM.L_ELBOW], p[LM.L_WRIST]);
-      const rElbow = angleDeg(p[LM.R_SHOULDER], p[LM.R_ELBOW], p[LM.R_WRIST]);
+      const lElbow = calculateAngle(p[LM.L_SHOULDER], p[LM.L_ELBOW], p[LM.L_WRIST]);
+      const rElbow = calculateAngle(p[LM.R_SHOULDER], p[LM.R_ELBOW], p[LM.R_WRIST]);
       const primary = (lElbow + rElbow) / 2;
       // Body line: shoulder-hip-ankle should be ~180°
-      const lBody = angleDeg(p[LM.L_SHOULDER], p[LM.L_HIP], p[LM.L_ANKLE]);
-      const rBody = angleDeg(p[LM.R_SHOULDER], p[LM.R_HIP], p[LM.R_ANKLE]);
+      const lBody = calculateAngle(p[LM.L_SHOULDER], p[LM.L_HIP], p[LM.L_ANKLE]);
+      const rBody = calculateAngle(p[LM.R_SHOULDER], p[LM.R_HIP], p[LM.R_ANKLE]);
       const bodyLine = (lBody + rBody) / 2;
       // Hip sag/pike
       const hipY = (p[LM.L_HIP].y + p[LM.R_HIP].y) / 2;
@@ -455,8 +447,8 @@ const EXERCISE_PROFILES = {
     requiredLandmarks: [LM.L_HIP, LM.R_HIP, LM.L_KNEE, LM.R_KNEE, LM.L_ANKLE, LM.R_ANKLE, LM.L_SHOULDER, LM.R_SHOULDER],
 
     computeAngles(p) {
-      const lKnee = angleDeg(p[LM.L_HIP], p[LM.L_KNEE], p[LM.L_ANKLE]);
-      const rKnee = angleDeg(p[LM.R_HIP], p[LM.R_KNEE], p[LM.R_ANKLE]);
+      const lKnee = calculateAngle(p[LM.L_HIP], p[LM.L_KNEE], p[LM.L_ANKLE]);
+      const rKnee = calculateAngle(p[LM.R_HIP], p[LM.R_KNEE], p[LM.R_ANKLE]);
       const primary = Math.min(lKnee, rKnee); // lunging leg
       const secondary = Math.max(lKnee, rKnee); // front leg
       const torsoTilt = Math.abs(tiltFromVertical(
@@ -524,11 +516,11 @@ const EXERCISE_PROFILES = {
     requiredLandmarks: [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP, LM.L_KNEE, LM.R_KNEE, LM.L_ANKLE, LM.R_ANKLE],
 
     computeAngles(p) {
-      const lHip = angleDeg(p[LM.L_SHOULDER], p[LM.L_HIP], p[LM.L_KNEE]);
-      const rHip = angleDeg(p[LM.R_SHOULDER], p[LM.R_HIP], p[LM.R_KNEE]);
+      const lHip = calculateAngle(p[LM.L_SHOULDER], p[LM.L_HIP], p[LM.L_KNEE]);
+      const rHip = calculateAngle(p[LM.R_SHOULDER], p[LM.R_HIP], p[LM.R_KNEE]);
       const primary = (lHip + rHip) / 2;
-      const lKnee = angleDeg(p[LM.L_HIP], p[LM.L_KNEE], p[LM.L_ANKLE]);
-      const rKnee = angleDeg(p[LM.R_HIP], p[LM.R_KNEE], p[LM.R_ANKLE]);
+      const lKnee = calculateAngle(p[LM.L_HIP], p[LM.L_KNEE], p[LM.L_ANKLE]);
+      const rKnee = calculateAngle(p[LM.R_HIP], p[LM.R_KNEE], p[LM.R_ANKLE]);
       const kneeAngle = (lKnee + rKnee) / 2;
       const hipDiff = Math.abs(lHip - rHip);
       return { primary, kneeAngle, hipDiff };
@@ -587,12 +579,12 @@ const EXERCISE_PROFILES = {
     requiredLandmarks: [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP, LM.L_KNEE, LM.R_KNEE, LM.L_WRIST, LM.R_WRIST],
 
     computeAngles(p) {
-      const lHip = angleDeg(p[LM.L_SHOULDER], p[LM.L_HIP], p[LM.L_KNEE]);
-      const rHip = angleDeg(p[LM.R_SHOULDER], p[LM.R_HIP], p[LM.R_KNEE]);
+      const lHip = calculateAngle(p[LM.L_SHOULDER], p[LM.L_HIP], p[LM.L_KNEE]);
+      const rHip = calculateAngle(p[LM.R_SHOULDER], p[LM.R_HIP], p[LM.R_KNEE]);
       const maxExtension = Math.max(lHip, rHip);
       const minExtension = Math.min(lHip, rHip);
-      const lArm = angleDeg(p[LM.L_HIP], p[LM.L_SHOULDER], p[LM.L_WRIST]);
-      const rArm = angleDeg(p[LM.R_HIP], p[LM.R_SHOULDER], p[LM.R_WRIST]);
+      const lArm = calculateAngle(p[LM.L_HIP], p[LM.L_SHOULDER], p[LM.L_WRIST]);
+      const rArm = calculateAngle(p[LM.R_HIP], p[LM.R_SHOULDER], p[LM.R_WRIST]);
       const armExtension = Math.max(lArm, rArm);
       const hipDiff = Math.abs(p[LM.L_HIP].y - p[LM.R_HIP].y) * 100;
       return { primary: maxExtension, minExtension, armExtension, hipDiff };
@@ -651,8 +643,8 @@ const EXERCISE_PROFILES = {
     requiredLandmarks: [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP, LM.L_ANKLE, LM.R_ANKLE],
 
     computeAngles(p) {
-      const lBody = angleDeg(p[LM.L_SHOULDER], p[LM.L_HIP], p[LM.L_ANKLE]);
-      const rBody = angleDeg(p[LM.R_SHOULDER], p[LM.R_HIP], p[LM.R_ANKLE]);
+      const lBody = calculateAngle(p[LM.L_SHOULDER], p[LM.L_HIP], p[LM.L_ANKLE]);
+      const rBody = calculateAngle(p[LM.R_SHOULDER], p[LM.R_HIP], p[LM.R_ANKLE]);
       const bodyLine = (lBody + rBody) / 2;
       const hipY = (p[LM.L_HIP].y + p[LM.R_HIP].y) / 2;
       const shoulderY = (p[LM.L_SHOULDER].y + p[LM.R_SHOULDER].y) / 2;
@@ -706,12 +698,12 @@ const EXERCISE_PROFILES = {
     requiredLandmarks: [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP, LM.L_KNEE, LM.R_KNEE, LM.L_ANKLE, LM.R_ANKLE],
 
     computeAngles(p) {
-      const lHip = angleDeg(p[LM.L_SHOULDER], p[LM.L_HIP], p[LM.L_KNEE]);
-      const rHip = angleDeg(p[LM.R_SHOULDER], p[LM.R_HIP], p[LM.R_KNEE]);
+      const lHip = calculateAngle(p[LM.L_SHOULDER], p[LM.L_HIP], p[LM.L_KNEE]);
+      const rHip = calculateAngle(p[LM.R_SHOULDER], p[LM.R_HIP], p[LM.R_KNEE]);
       const primary = Math.min(lHip, rHip);   // driving leg
       const secondary = Math.max(lHip, rHip); // extended leg
-      const lBody = angleDeg(p[LM.L_SHOULDER], p[LM.L_HIP], p[LM.L_ANKLE]);
-      const rBody = angleDeg(p[LM.R_SHOULDER], p[LM.R_HIP], p[LM.R_ANKLE]);
+      const lBody = calculateAngle(p[LM.L_SHOULDER], p[LM.L_HIP], p[LM.L_ANKLE]);
+      const rBody = calculateAngle(p[LM.R_SHOULDER], p[LM.R_HIP], p[LM.R_ANKLE]);
       const bodyLine = (lBody + rBody) / 2;
       return { primary, secondary, bodyLine };
     },
@@ -824,16 +816,14 @@ export class GymMetricEngine {
     this._stabilityFailCount = 0;
   }
 
-  smoothPoint(idx, pt, time) {
+  smoothPoint(idx, pt) {
     if (!this.filters[idx]) {
-      this.filters[idx] = {
-        x: new OneEuroFilter(1.2, 0.01),
-        y: new OneEuroFilter(1.2, 0.01),
-      };
+      this.filters[idx] = new EMAFilter(0.5); // alpha = 0.5 as requested
     }
+    const smoothed = this.filters[idx].filter(pt.x, pt.y);
     return {
-      x: this.filters[idx].x.filter(pt.x, time),
-      y: this.filters[idx].y.filter(pt.y, time),
+      x: smoothed.x,
+      y: smoothed.y,
       visibility: pt.visibility,
     };
   }
@@ -856,10 +846,16 @@ export class GymMetricEngine {
       return this._result(profile, "");
     }
 
-    // ── Smooth all landmarks ──────────────────────────────
+    // ── Filter and Smooth Required Landmarks Only ─────────
     const pts = [];
-    for (let i = 0; i < landmarks.length; i++) {
-      pts[i] = this.smoothPoint(i, landmarks[i], timeSec);
+    // Only process landmarks relevant to the current exercise and camera tracking
+    const cameraAngleIndices = [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP];
+    const indicesToProcess = new Set([...profile.requiredLandmarks, ...cameraAngleIndices]);
+    
+    for (const idx of indicesToProcess) {
+      if (landmarks[idx]) {
+        pts[idx] = this.smoothPoint(idx, landmarks[idx]);
+      }
     }
 
     // ── Visibility gate ───────────────────────────────────
