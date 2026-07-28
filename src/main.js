@@ -102,7 +102,7 @@ updateRepLabel();
 // ─── Initialize MediaPipe PoseLandmarker ──────────────────
 async function initPoseLandmarker() {
   const vision = await FilesetResolver.forVisionTasks(
-    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm"
   );
 
   poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
@@ -271,7 +271,14 @@ function detectFrame() {
   lastVideoTime = currentTime;
 
   const startMs = performance.now();
-  const result = poseLandmarker.detectForVideo(videoEl, startMs);
+  let result;
+  try {
+    result = poseLandmarker.detectForVideo(videoEl, startMs);
+  } catch (error) {
+    console.warn("Pose detection skipped frame due to error:", error);
+    animationFrameId = requestAnimationFrame(detectFrame);
+    return;
+  }
 
   if (result.landmarks && result.landmarks.length > 0) {
     const landmarks = result.landmarks[0];
