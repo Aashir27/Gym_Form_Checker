@@ -162,12 +162,6 @@ function chooseCurlArm(p, previousArm) {
   const leftVisible = armIsVisible(left);
   const rightVisible = armIsVisible(right);
 
-  if (previousArm === "left" && leftVisible) return "left";
-  if (previousArm === "right" && rightVisible) return "right";
-  if (!leftVisible && !rightVisible) return null;
-  if (leftVisible && !rightVisible) return "left";
-  if (rightVisible && !leftVisible) return "right";
-
   const score = (arm) => {
     const visibility = arm.reduce((sum, point) => sum + point.visibility, 0) / arm.length;
     const projectedLength = dist(arm[0], arm[1]) + dist(arm[1], arm[2]);
@@ -176,6 +170,15 @@ function chooseCurlArm(p, previousArm) {
     const depth = arm.reduce((sum, point) => sum + (Number.isFinite(point.z) ? -point.z : 0), 0) / arm.length;
     return visibility * 2 + projectedLength + depth * 0.1;
   };
+
+  const leftScore = leftVisible ? score(left) : -Infinity;
+  const rightScore = rightVisible ? score(right) : -Infinity;
+
+  if (!leftVisible && !rightVisible) return null;
+  if (previousArm === "left" && leftVisible && leftScore >= rightScore - 0.2) return "left";
+  if (previousArm === "right" && rightVisible && rightScore >= leftScore - 0.2) return "right";
+  if (leftVisible && !rightVisible) return "left";
+  if (rightVisible && !leftVisible) return "right";
 
   return score(left) >= score(right) ? "left" : "right";
 }
@@ -855,9 +858,7 @@ export class GymMetricEngine {
 
     if (key === "bicep_curl") {
       const torso = [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP];
-      if (activeArm === "left") return [...torso, LM.L_ELBOW, LM.L_WRIST];
-      if (activeArm === "right") return [...torso, LM.R_ELBOW, LM.R_WRIST];
-      return torso;
+      return [...torso, LM.L_ELBOW, LM.L_WRIST, LM.R_ELBOW, LM.R_WRIST];
     }
 
     return profile.requiredLandmarks;
