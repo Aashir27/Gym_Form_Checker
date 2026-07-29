@@ -950,29 +950,55 @@ const EXERCISE_PROFILES = {
       engine._activeArm = activeArm;
 
       let curlAngle;
-      let driftAngle;
-      let elbowDelta = 0;
+      let shoulderX;
+      let elbowX;
+      let torsoWidth;
       if (activeArm === "left") {
         curlAngle = calculateAngle(p[LM.L_SHOULDER], p[LM.L_ELBOW], p[LM.L_WRIST]);
-        driftAngle = calculateAngle(p[LM.L_HIP], p[LM.L_SHOULDER], p[LM.L_ELBOW]);
-        const elbow = p[LM.L_ELBOW];
-        const shoulder = p[LM.L_SHOULDER];
-        const hip = p[LM.L_HIP];
-        const torsoLen = Math.max(dist(shoulder, hip), 0.0001);
-        const proj = projectPointOnSegment(elbow, shoulder, hip);
-        elbowDelta = dist(elbow, proj) / torsoLen;
+        shoulderX = p[LM.L_SHOULDER].x;
+        elbowX = p[LM.L_ELBOW].x;
+        torsoWidth = Math.max(Math.abs(p[LM.L_SHOULDER].x - p[LM.L_HIP].x), 0.0001);
       } else {
         curlAngle = calculateAngle(p[LM.R_SHOULDER], p[LM.R_ELBOW], p[LM.R_WRIST]);
-        driftAngle = calculateAngle(p[LM.R_HIP], p[LM.R_SHOULDER], p[LM.R_ELBOW]);
-        const elbow = p[LM.R_ELBOW];
-        const shoulder = p[LM.R_SHOULDER];
-        const hip = p[LM.R_HIP];
-        const torsoLen = Math.max(dist(shoulder, hip), 0.0001);
-        const proj = projectPointOnSegment(elbow, shoulder, hip);
-        elbowDelta = dist(elbow, proj) / torsoLen;
+        shoulderX = p[LM.R_SHOULDER].x;
+        elbowX = p[LM.R_ELBOW].x;
+        torsoWidth = Math.max(Math.abs(p[LM.R_SHOULDER].x - p[LM.R_HIP].x), 0.0001);
       }
+      // Relative forward drift of the elbow past the shoulder line (normalized
+      // so it is independent of body size and camera distance). In correct
+      // form this stays near zero; a momentum cheat pushes the elbow far
+      // forward (+ve values) or backward (-ve) depending on side of body.
+      const elbowForwardNorm = (elbowX - shoulderX) / torsoWidth;
 
-      return { primary: curlAngle, driftAngle, elbowDelta, activeArm };
+      // Running EMA baseline of elbow anchor position per rep (set at READY
+      // phase and during standing arm-extended start). We track both
+      // absolute shoulder-relative forward-offset and drift of that offset
+      // from its own rep-start baseline.
+      if (!engine._curlBaseline || engine._curlBaseline.arm !== activeArm) {
+        engine._curlBaseline = {
+          arm: activeArm,
+          forwardBaseline: elbowForwardNorm,
+          samples: 1,
+        };
+      } else {
+        // Anchor baseline only during stable READY / fully-extended moments.
+        const nearBottom = curlAngle > 150;
+        if (nearBottom && engine._curlBaseline.samples < 12) {
+          const k = 2 / (engine._curlBaseline.samples + 2);
+          engine._curlBaseline.forwardBaseline =
+            engine._curlBaseline.forwardBaseline * (1 - k) + elbowForwardNorm * k;
+          engine._curlBaseline.samples += 1;
+        }
+      }
+      const elbowDriftFromBaseline =
+        elbowForwardNorm - engine._curlBaseline.forwardBaseline;
+
+      return {
+        primary: curlAngle,
+        elbowForwardNorm,
+        elbowDriftFromBaseline,
+        activeArm,
+      };
     },
 
     phases: ["READY", "CONTRACTING", "EXTENDING", "COMPLETE"],
@@ -1000,29 +1026,14 @@ const EXERCISE_PROFILES = {
     },
 
     stabilityChecks(a) {
-      // Strict form: the elbow must stay in line with the body.
-      // driftAngle = HIP -> SHOULDER -> ELBOW. In correct form the upper
-      // arm hangs straight down so this angle is close to 180 deg (elbow
-      // directly below shoulder along the shoulder-hip line). We also
-      // track elbowDelta = perpendicular distance of the elbow from the
-      // shoulder-hip torso line (normalized by torso length) so any
-      // forward/backward swing or chicken-wing outward drift is caught
-      // independently of the angle-based check.
-      //
-      // Thresholds are intentionally forgiving: a perfect 180 deg / 0
-      // offset is unrealistic even in textbook form; we only block reps
-      // when the user is clearly swinging the elbow and cheating the rep.
-      const driftFromInline = Math.abs(a.driftAngle - 180);
-      const driftFail = driftFromInline > 42;
-      const offsetFail = (a.elbowDelta ?? 0) > 0.55;
-      if (driftFail && offsetFail) {
-        return { pass: false, reason: "Elbow moving too much; keep it pinned to your side" };
-      }
-      if (driftFail) {
-        return { pass: false, reason: "Shoulder swinging; keep upper arm vertical" };
-      }
-      if (offsetFail) {
-        return { pass: false, reason: "Elbow drifting; keep it inline with your body" };
+      // Simple, forgiving anchor: we only fail the rep if the elbow drifts
+      // more than ~half a torso-width forward/backward from its own
+      // rep-start baseline position. Real textbook curls have some small
+      // natural forward drift; only obvious momentum cheats (rocking the
+      // elbow way forward to hoist the weight) are blocked.
+      const drift = Math.abs(a.elbowDriftFromBaseline ?? 0);
+      if (drift > 0.55) {
+        return { pass: false, reason: "Elbow moving too much; keep it anchored at your side" };
       }
       return { pass: true };
     },
@@ -1031,22 +1042,10 @@ const EXERCISE_PROFILES = {
       if (cam && !this.validateAngle(cam)) {
         return { type: "info", msg: this.angleHint };
       }
-      
-      const driftFromInline = Math.abs(a.driftAngle - 180);
-      const offset = a.elbowDelta ?? 0;
 
-      // Real-time form feedback before the stability check blocks a rep.
-      // Use looser warning thresholds than the rep-block thresholds so
-      // users receive gentle coaching rather than being nagged on every
-      // tiny deviation that still counts as good form.
-      if (driftFromInline > 30 || offset > 0.42) {
-        if (offset > 0.42 && driftFromInline > 30) {
-          return { type: "warning", msg: "Elbow moving; keep it pinned to your side" };
-        }
-        if (offset > 0.42) {
-          return { type: "warning", msg: "Elbow out of line; keep it inline with body" };
-        }
-        return { type: "warning", msg: "Keep upper arm still; only the forearm moves" };
+      const drift = Math.abs(a.elbowDriftFromBaseline ?? 0);
+      if (drift > 0.35) {
+        return { type: "warning", msg: "Keep your elbow still at your side; no swinging" };
       }
 
       const isExtending = engine._velocityTracker.velocity > 0;
@@ -1281,6 +1280,7 @@ export class GymMetricEngine {
     this._formState = {};
     this._calibrator.reset();
     this._calibrationState = null;
+    this._curlBaseline = null;
   }
 
   smoothPoint(idx, pt) {
