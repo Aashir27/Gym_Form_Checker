@@ -949,53 +949,55 @@ const EXERCISE_PROFILES = {
       const activeArm = chooseCurlArm(p, engine._activeArm);
       engine._activeArm = activeArm;
 
-      let curlAngle;
-      let shoulderX;
-      let elbowX;
-      let torsoWidth;
-      if (activeArm === "left") {
-        curlAngle = calculateAngle(p[LM.L_SHOULDER], p[LM.L_ELBOW], p[LM.L_WRIST]);
-        shoulderX = p[LM.L_SHOULDER].x;
-        elbowX = p[LM.L_ELBOW].x;
-        torsoWidth = Math.max(Math.abs(p[LM.L_SHOULDER].x - p[LM.L_HIP].x), 0.0001);
-      } else {
-        curlAngle = calculateAngle(p[LM.R_SHOULDER], p[LM.R_ELBOW], p[LM.R_WRIST]);
-        shoulderX = p[LM.R_SHOULDER].x;
-        elbowX = p[LM.R_ELBOW].x;
-        torsoWidth = Math.max(Math.abs(p[LM.R_SHOULDER].x - p[LM.R_HIP].x), 0.0001);
-      }
-      // Relative forward drift of the elbow past the shoulder line (normalized
-      // so it is independent of body size and camera distance). In correct
-      // form this stays near zero; a momentum cheat pushes the elbow far
-      // forward (+ve values) or backward (-ve) depending on side of body.
-      const elbowForwardNorm = (elbowX - shoulderX) / torsoWidth;
+      const curlAngle = activeArm === "left"
+        ? calculateAngle(p[LM.L_SHOULDER], p[LM.L_ELBOW], p[LM.L_WRIST])
+        : calculateAngle(p[LM.R_SHOULDER], p[LM.R_ELBOW], p[LM.R_WRIST]);
 
-      // Running EMA baseline of elbow anchor position per rep (set at READY
-      // phase and during standing arm-extended start). We track both
-      // absolute shoulder-relative forward-offset and drift of that offset
-      // from its own rep-start baseline.
+      // Stable torso-width normalizer: use the side with CLEAR separation
+      // in x (the "near" side in a profile view). This avoids the far arm
+      // collapsing to near-zero x-distance, which previously caused the
+      // right arm to always fail the drift check.
+      const lTorsoX = Math.abs(p[LM.L_SHOULDER].x - p[LM.L_HIP].x);
+      const rTorsoX = Math.abs(p[LM.R_SHOULDER].x - p[LM.R_HIP].x);
+      const torsoWidth = Math.max(lTorsoX, rTorsoX, 0.0001);
+
+      const shoulder = p[activeArm === "left" ? LM.L_SHOULDER : LM.R_SHOULDER];
+      const elbow = p[activeArm === "left" ? LM.L_ELBOW : LM.R_ELBOW];
+      const rawForward = (elbow.x - shoulder.x) / torsoWidth;
+
+      // Per-frame EMA smoothing of the forward drift with alpha 0.25 so
+      // 1-frame pose estimation noise never causes a false spike in the
+      // drift signal (eliminates rapid comment switching / jitter).
       if (!engine._curlBaseline || engine._curlBaseline.arm !== activeArm) {
         engine._curlBaseline = {
           arm: activeArm,
-          forwardBaseline: elbowForwardNorm,
-          samples: 1,
+          anchorBaseline: rawForward,
+          smoothedForward: rawForward,
+          anchorSamples: 1,
+          driftStrikeCount: 0,
         };
       } else {
-        // Anchor baseline only during stable READY / fully-extended moments.
-        const nearBottom = curlAngle > 150;
-        if (nearBottom && engine._curlBaseline.samples < 12) {
-          const k = 2 / (engine._curlBaseline.samples + 2);
-          engine._curlBaseline.forwardBaseline =
-            engine._curlBaseline.forwardBaseline * (1 - k) + elbowForwardNorm * k;
-          engine._curlBaseline.samples += 1;
+        const ALPHA = 0.25;
+        engine._curlBaseline.smoothedForward =
+          ALPHA * rawForward + (1 - ALPHA) * engine._curlBaseline.smoothedForward;
+
+        // Only ever lock in the anchor during arm-down (bottom of rep,
+        // stable standing position), and stop updating once we have a
+        // solid sample so mid-set natural drift does not re-anchor the
+        // baseline and hide genuine cheating.
+        if (curlAngle > 155 && engine._curlBaseline.anchorSamples < 18) {
+          const k = 2 / (engine._curlBaseline.anchorSamples + 2);
+          engine._curlBaseline.anchorBaseline =
+            engine._curlBaseline.anchorBaseline * (1 - k) + rawForward * k;
+          engine._curlBaseline.anchorSamples += 1;
         }
       }
+
       const elbowDriftFromBaseline =
-        elbowForwardNorm - engine._curlBaseline.forwardBaseline;
+        engine._curlBaseline.smoothedForward - engine._curlBaseline.anchorBaseline;
 
       return {
         primary: curlAngle,
-        elbowForwardNorm,
         elbowDriftFromBaseline,
         activeArm,
       };
@@ -1025,15 +1027,24 @@ const EXERCISE_PROFILES = {
       }
     },
 
-    stabilityChecks(a) {
-      // Simple, forgiving anchor: we only fail the rep if the elbow drifts
-      // more than ~half a torso-width forward/backward from its own
-      // rep-start baseline position. Real textbook curls have some small
-      // natural forward drift; only obvious momentum cheats (rocking the
-      // elbow way forward to hoist the weight) are blocked.
+    stabilityChecks(a, engine) {
+      // Extremely loose, strike-debounced drift guard.
+      // ONLY blocks a rep if the SMOOTHED elbow drift has exceeded 1.5x
+      // the user's own torso width from their anchor baseline for 6
+      // CONSECUTIVE frames. A torso-width = ~shoulder to hip, so this
+      // only fires when the user visibly and repeatedly swings the
+      // elbow as a unit to generate momentum. Natural minor shoulder
+      // flexion that happens in strict curls, and all 1-frame / 2-frame
+      // pose jitter, are completely ignored.
       const drift = Math.abs(a.elbowDriftFromBaseline ?? 0);
-      if (drift > 0.55) {
-        return { pass: false, reason: "Elbow moving too much; keep it anchored at your side" };
+      const cb = engine._curlBaseline;
+      if (cb && drift > 1.5) {
+        cb.driftStrikeCount = Math.min(cb.driftStrikeCount + 1, 999);
+        if (cb.driftStrikeCount >= 6) {
+          return { pass: false, reason: "Elbow swinging too much; anchor it at your side" };
+        }
+      } else if (cb) {
+        cb.driftStrikeCount = 0;
       }
       return { pass: true };
     },
@@ -1042,11 +1053,11 @@ const EXERCISE_PROFILES = {
       if (cam && !this.validateAngle(cam)) {
         return { type: "info", msg: this.angleHint };
       }
-
-      const drift = Math.abs(a.elbowDriftFromBaseline ?? 0);
-      if (drift > 0.35) {
-        return { type: "warning", msg: "Keep your elbow still at your side; no swinging" };
-      }
+      // IMPORTANT: no per-frame drift warning here. The drift guard is
+      // debounced inside stabilityChecks and only fires on sustained
+      // cheating, so the feedback text never rapidly flickers between
+      // "good" and "drift warning" on tiny jitter spikes. We only show
+      // the standard ROM/phase coaching messages below.
 
       const isExtending = engine._velocityTracker.velocity > 0;
 
@@ -1422,7 +1433,7 @@ export class GymMetricEngine {
         const hasMinDuration = !profile.minRepDurationMs || repDuration >= profile.minRepDurationMs;
         const hasMinVelocity = !profile.minVelocity || this._maxCycleSpeed >= profile.minVelocity;
         const hasMinFrames = this._noRepFrames >= (profile.minRepFrames ?? 4);
-        const stabilityResult = profile.stabilityChecks ? profile.stabilityChecks(angles) : { pass: true };
+        const stabilityResult = profile.stabilityChecks ? profile.stabilityChecks(angles, this) : { pass: true };
         const isAngleOk = angleOk;
         const isFormOk = activeExercise === "push_up" || activeExercise === "plank" ? formOk : true;
 
