@@ -1,5 +1,5 @@
 /**
- * EMAFilter — Exponential Moving Average for low-pass jitter smoothing.
+ * EMAFilter. Exponential Moving Average for low-pass jitter smoothing.
  * Rock-steady smoothing with minimal overhead.
  */
 export class EMAFilter {
@@ -117,6 +117,18 @@ function mid(a, b) {
 /** Euclidean distance between two landmarks (normalised coords). */
 function dist(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+/** Project point p onto the line segment defined by a and b. */
+function projectPointOnSegment(p, a, b) {
+  const abx = b.x - a.x;
+  const aby = b.y - a.y;
+  const apx = p.x - a.x;
+  const apy = p.y - a.y;
+  const abLenSq = abx * abx + aby * aby;
+  let t = abLenSq > 0 ? (apx * abx + apy * aby) / abLenSq : 0;
+  t = clamp(t, 0, 1);
+  return { x: a.x + abx * t, y: a.y + aby * t };
 }
 
 /** Visibility check. */
@@ -621,7 +633,7 @@ export class PushupPlankCalibrator {
       if (confSamples.length < CALIBRATION_MIN_SAMPLES) {
         this.state = "rejected";
         this.rejectedAt = 0;
-        this.lastRejectionReason = "Calibration looks off — check your position and try again";
+        this.lastRejectionReason = "Calibration looks off; check your position and try again";
         return {
           state: "rejected",
           progressPct: 1,
@@ -643,7 +655,7 @@ export class PushupPlankCalibrator {
       if (!hipInRange || !neckInRange) {
         this.state = "rejected";
         this.rejectedAt = 0;
-        this.lastRejectionReason = "Calibration looks off — check your position and try again";
+        this.lastRejectionReason = "Calibration looks off; check your position and try again";
         return {
           state: "rejected",
           progressPct: 1,
@@ -655,7 +667,7 @@ export class PushupPlankCalibrator {
       if (!hipStable || !neckStable) {
         this.state = "rejected";
         this.rejectedAt = 0;
-        this.lastRejectionReason = "Calibration looks off — hold still and try again";
+        this.lastRejectionReason = "Calibration looks off; hold still and try again";
         return {
           state: "rejected",
           progressPct: 1,
@@ -696,9 +708,9 @@ export class PushupPlankCalibrator {
  * zero; a front-on view maximises it.
  *
  * viewAngle:
- *   "side"   — user turned ~90° (profile view)
- *   "angled" — user turned ~30-60° (three-quarter view)
- *   "front"  — user facing camera directly
+ *   "side"   : user turned ~90 deg (profile view)
+ *   "angled" : user turned ~30-60 deg (three-quarter view)
+ *   "front"  : user facing camera directly
  *
  * We also detect body orientation (upright vs horizontal) for
  * floor exercises like push-ups and planks.
@@ -823,21 +835,21 @@ class VelocityTracker {
  * Exercise Profiles  (camera-angle-aware, strict rep counting)
  *
  * Each profile adds:
- *   preferredAngles    — which camera view(s) work best
- *   angleHint          — guidance message shown when angle is wrong
- *   bodyOrientation    — "upright" | "horizontal" | "any"
- *   validateAngle(cam) — returns true if camera angle is acceptable
- *   minROM             — minimum range-of-motion (degrees) to count
- *   minRepDurationMs   — minimum time for a full rep cycle
- *   minVelocity        — min deg/s during active movement phases
- *   stabilityChecks(a) — extra guards that BLOCK a rep if they fail
+ *   preferredAngles    : which camera view(s) work best
+ *   angleHint          : guidance message shown when angle is wrong
+ *   bodyOrientation    : "upright" | "horizontal" | "any"
+ *   validateAngle(cam) : returns true if camera angle is acceptable
+ *   minROM             : minimum range-of-motion (degrees) to count
+ *   minRepDurationMs   : minimum time for a full rep cycle
+ *   minVelocity        : min deg/s during active movement phases
+ *   stabilityChecks(a) : extra guards that BLOCK a rep if they fail
  * ────────────────────────────────────────────────────────────── */
 
 const EXERCISE_PROFILES = {
 
   /* ══════════════════════════════════════════════════════════
    *  SQUAT
-   *  Best viewed from side/angled — need to see knee bend & hip hinge
+   *  Best viewed from side/angled; need to see knee bend & hip hinge
    * ══════════════════════════════════════════════════════════ */
   squat: {
     label: "Squat",
@@ -856,7 +868,7 @@ const EXERCISE_PROFILES = {
         mid(p[LM.L_HIP], p[LM.R_HIP]),
         mid(p[LM.L_SHOULDER], p[LM.R_SHOULDER])
       ));
-      // Knee tracking over toes — compare knee x to ankle x (side view)
+      // Knee tracking over toes; compare knee x to ankle x (side view)
       const kneeOverToe = Math.abs(
         ((p[LM.L_KNEE].x + p[LM.R_KNEE].x) / 2) - ((p[LM.L_ANKLE].x + p[LM.R_ANKLE].x) / 2)
       ) * 100;
@@ -874,7 +886,7 @@ const EXERCISE_PROFILES = {
     minTransitionMs: 180,
     minROM: 45,            // must bend at least 45° from standing
     minRepDurationMs: 800, // a full squat can't happen in <0.8s
-    minVelocity: 15,       // deg/s — must move intentionally
+    minVelocity: 15,       // deg/s; must move intentionally
 
     validateAngle(cam) {
       // Squats work from side or angled view; front view is unreliable
@@ -895,7 +907,7 @@ const EXERCISE_PROFILES = {
 
     stabilityChecks(a) {
       // Block rep if torso is excessively tilted (probably a bow, not a squat)
-      if (a.torsoTilt > 55) return { pass: false, reason: "Excessive forward lean — not a valid squat" };
+      if (a.torsoTilt > 55) return { pass: false, reason: "Excessive forward lean; not a valid squat" };
       return { pass: true };
     },
 
@@ -904,32 +916,29 @@ const EXERCISE_PROFILES = {
       if (cam && !this.validateAngle(cam)) {
         return { type: "info", msg: this.angleHint };
       }
-      if (phase === "BOTTOM" && a.primary < 55)        return { type: "warning", msg: "Too deep — risk of knee strain" };
-      if (phase === "BOTTOM" && a.primary > 120)        return { type: "warning", msg: "Too shallow — go deeper for a full rep" };
-      if (a.torsoTilt > 40)                             return { type: "warning", msg: "Chest too forward — stay upright" };
-      if (a.kneeDiff > 18)                              return { type: "warning", msg: "Uneven knees — push both sides evenly" };
-      if (phase === "BOTTOM" && a.hipAngle < 70)        return { type: "warning", msg: "Hips too far back — sit down, not back" };
+      if (phase === "BOTTOM" && a.primary < 55)        return { type: "warning", msg: "Too deep; risk of knee strain" };
+      if (phase === "BOTTOM" && a.primary > 120)        return { type: "warning", msg: "Too shallow; go deeper for a full rep" };
+      if (a.torsoTilt > 40)                             return { type: "warning", msg: "Chest too forward; stay upright" };
+      if (a.kneeDiff > 18)                              return { type: "warning", msg: "Uneven knees; push both sides evenly" };
+      if (phase === "BOTTOM" && a.hipAngle < 70)        return { type: "warning", msg: "Hips too far back; sit down, not back" };
       if (phase === "BOTTOM" && a.primary >= 55 && a.primary <= 100)
-                                                        return { type: "good", msg: "Good depth — parallel or below 🔥" };
+                                                        return { type: "good", msg: "Good depth; parallel or below 🔥" };
       if (phase === "ASCENDING")                        return { type: "good", msg: "Drive up through your heels!" };
-      if (phase === "READY")                            return { type: "good", msg: "Stand tall — ready to squat" };
+      if (phase === "READY")                            return { type: "good", msg: "Stand tall; ready to squat" };
       return null;
     },
   },
 
   /* ══════════════════════════════════════════════════════════
    *  BICEP CURL
-   *  Best from side view — elbow flexion is a sagittal-plane motion
+   *  Best from side view; elbow flexion is a sagittal-plane motion
    * ══════════════════════════════════════════════════════════ */
   bicep_curl: {
     label: "Bicep Curl",
     type: "rep",
     preferredAngles: ["side"],
-    angleHint: "Turn sideways to camera — curls are best tracked from the side",
+    angleHint: "Turn sideways to camera; curls are best tracked from the side",
     bodyOrientation: "upright",
-    // Both shoulders/hips establish the side-on camera requirement. Only one
-    // complete arm needs to be visible, because the far arm is often occluded
-    // in the profile view required for this exercise.
     requiredLandmarks: [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP],
     requiredLandmarkGroups: [
       [LM.L_SHOULDER, LM.L_ELBOW, LM.L_WRIST],
@@ -942,20 +951,30 @@ const EXERCISE_PROFILES = {
 
       let curlAngle;
       let driftAngle;
+      let elbowDelta = 0;
       if (activeArm === "left") {
         curlAngle = calculateAngle(p[LM.L_SHOULDER], p[LM.L_ELBOW], p[LM.L_WRIST]);
         driftAngle = calculateAngle(p[LM.L_HIP], p[LM.L_SHOULDER], p[LM.L_ELBOW]);
+        const elbow = p[LM.L_ELBOW];
+        const shoulder = p[LM.L_SHOULDER];
+        const hip = p[LM.L_HIP];
+        const torsoLen = Math.max(dist(shoulder, hip), 0.0001);
+        const proj = projectPointOnSegment(elbow, shoulder, hip);
+        elbowDelta = dist(elbow, proj) / torsoLen;
       } else {
         curlAngle = calculateAngle(p[LM.R_SHOULDER], p[LM.R_ELBOW], p[LM.R_WRIST]);
         driftAngle = calculateAngle(p[LM.R_HIP], p[LM.R_SHOULDER], p[LM.R_ELBOW]);
+        const elbow = p[LM.R_ELBOW];
+        const shoulder = p[LM.R_SHOULDER];
+        const hip = p[LM.R_HIP];
+        const torsoLen = Math.max(dist(shoulder, hip), 0.0001);
+        const proj = projectPointOnSegment(elbow, shoulder, hip);
+        elbowDelta = dist(elbow, proj) / torsoLen;
       }
 
-      return { primary: curlAngle, driftAngle, activeArm };
+      return { primary: curlAngle, driftAngle, elbowDelta, activeArm };
     },
 
-    // Start at the bottom, curl to the top, then return to the bottom. These
-    // are intentionally tolerant: a webcam's 2D elbow angle is an estimate,
-    // so requiring a textbook 0°/180° curl makes normal reps fail.
     phases: ["READY", "CONTRACTING", "EXTENDING", "COMPLETE"],
     thresholds: {},
     minTransitionMs: 80,
@@ -981,6 +1000,26 @@ const EXERCISE_PROFILES = {
     },
 
     stabilityChecks(a) {
+      // Strict form: the elbow must stay in line with the body.
+      // driftAngle = HIP -> SHOULDER -> ELBOW. In correct form the upper
+      // arm hangs straight down so this angle is close to 180 deg (elbow
+      // directly below shoulder along the shoulder-hip line). We also
+      // track elbowDelta = perpendicular distance of the elbow from the
+      // shoulder-hip torso line (normalized by torso length) so any
+      // forward/backward swing or chicken-wing outward drift is caught
+      // independently of the angle-based check.
+      const driftFromInline = Math.abs(a.driftAngle - 180);
+      const driftFail = driftFromInline > 15;
+      const offsetFail = (a.elbowDelta ?? 0) > 0.22;
+      if (driftFail && offsetFail) {
+        return { pass: false, reason: "Elbow moving too much; keep it pinned to your side" };
+      }
+      if (driftFail) {
+        return { pass: false, reason: "Shoulder swinging; keep upper arm vertical" };
+      }
+      if (offsetFail) {
+        return { pass: false, reason: "Elbow drifting; keep it inline with your body" };
+      }
       return { pass: true };
     },
 
@@ -989,19 +1028,30 @@ const EXERCISE_PROFILES = {
         return { type: "info", msg: this.angleHint };
       }
       
+      const driftFromInline = Math.abs(a.driftAngle - 180);
+      const offset = a.elbowDelta ?? 0;
+
+      // Real-time form feedback before the stability check blocks a rep.
+      if (driftFromInline > 12 || offset > 0.18) {
+        if (offset > 0.18 && driftFromInline > 12) {
+          return { type: "warning", msg: "Elbow moving; keep it pinned to your side" };
+        }
+        if (offset > 0.18) {
+          return { type: "warning", msg: "Elbow out of line; keep it inline with body" };
+        }
+        return { type: "warning", msg: "Keep upper arm still; only the forearm moves" };
+      }
+
       const isExtending = engine._velocityTracker.velocity > 0;
 
-      // The arm started lowering before reaching the contracted target.
       if (phase === "CONTRACTING" && isExtending && a.primary > 75 && a.primary < 125) {
         return { type: "warning", msg: "Curl all the way up to finish the rep!" };
       }
 
-      // The arm started curling again before returning to the bottom.
       if (phase === "EXTENDING" && !isExtending && a.primary > 75 && a.primary < 140) {
         return { type: "warning", msg: "Extend your arm fully at the bottom." };
       }
 
-      // Contextual state feedback
       if (phase === "READY" || phase === "EXTENDING") return { type: "good", msg: "Extend arm fully downward." };
       if (phase === "CONTRACTING") return { type: "good", msg: "Curl up for full contraction!" };
 
@@ -1011,13 +1061,13 @@ const EXERCISE_PROFILES = {
 
   /* ══════════════════════════════════════════════════════════
    *  PUSH-UP
-   *  Best from side view — shows elbow bend, body line, hip alignment
+   *  Best from side view; shows elbow bend, body line, hip alignment
    * ══════════════════════════════════════════════════════════ */
   push_up: {
     label: "Push-Up",
     type: "rep",
     preferredAngles: ["side", "angled"],
-    angleHint: "Place camera to the side — push-ups need a profile view",
+    angleHint: "Place camera to the side; push-ups need a profile view",
     bodyOrientation: "horizontal",
     requiredLandmarks: [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_ELBOW, LM.R_ELBOW, LM.L_WRIST, LM.R_WRIST, LM.L_HIP, LM.R_HIP, LM.L_ANKLE, LM.R_ANKLE],
 
@@ -1025,17 +1075,14 @@ const EXERCISE_PROFILES = {
       const lElbow = calculateAngle(p[LM.L_SHOULDER], p[LM.L_ELBOW], p[LM.L_WRIST]);
       const rElbow = calculateAngle(p[LM.R_SHOULDER], p[LM.R_ELBOW], p[LM.R_WRIST]);
       const primary = (lElbow + rElbow) / 2;
-      // Body line: shoulder-hip-ankle should be ~180°
       const lBody = calculateAngle(p[LM.L_SHOULDER], p[LM.L_HIP], p[LM.L_ANKLE]);
       const rBody = calculateAngle(p[LM.R_SHOULDER], p[LM.R_HIP], p[LM.R_ANKLE]);
       const bodyLine = (lBody + rBody) / 2;
-      // Hip sag/pike
       const hipY = (p[LM.L_HIP].y + p[LM.R_HIP].y) / 2;
       const shoulderY = (p[LM.L_SHOULDER].y + p[LM.R_SHOULDER].y) / 2;
       const ankleY = (p[LM.L_ANKLE].y + p[LM.R_ANKLE].y) / 2;
       const expectedHipY = (shoulderY + ankleY) / 2;
       const hipDeviation = (hipY - expectedHipY) * 100;
-      // Shoulder vertical travel (how much does the body move up/down)
       const shoulderHeight = shoulderY;
       return { primary, bodyLine, hipDeviation, shoulderHeight };
     },
@@ -1063,8 +1110,7 @@ const EXERCISE_PROFILES = {
     },
 
     stabilityChecks(a) {
-      // Body must be roughly straight — no pike or extreme sag
-      if (a.bodyLine < 140) return { pass: false, reason: "Body not straight — maintain plank position" };
+      if (a.bodyLine < 140) return { pass: false, reason: "Body not straight; maintain plank position" };
       return { pass: true };
     },
 
@@ -1072,209 +1118,13 @@ const EXERCISE_PROFILES = {
       if (cam && !this.validateAngle(cam)) {
         return { type: "info", msg: this.angleHint };
       }
-      if (a.hipDeviation > 10)                 return { type: "warning", msg: "Hips sagging — tighten core" };
-      if (a.hipDeviation < -12)                return { type: "warning", msg: "Hips too high — flatten out your body" };
+      if (a.hipDeviation > 10)                 return { type: "warning", msg: "Hips sagging; tighten core" };
+      if (a.hipDeviation < -12)                return { type: "warning", msg: "Hips too high; flatten out your body" };
       if (a.bodyLine < 150)                    return { type: "warning", msg: "Maintain a straight body line" };
-      if (phase === "BOTTOM" && a.primary > 110) return { type: "warning", msg: "Go lower — chest toward floor" };
+      if (phase === "BOTTOM" && a.primary > 110) return { type: "warning", msg: "Go lower; chest toward floor" };
       if (phase === "BOTTOM" && a.primary <= 95) return { type: "good", msg: "Great depth! Chest near floor 🔥" };
-      if (phase === "ASCENDING")               return { type: "good", msg: "Push strong — full lockout!" };
-      if (phase === "READY")                   return { type: "good", msg: "Good plank position — begin!" };
-      return null;
-    },
-  },
-
-  /* ══════════════════════════════════════════════════════════
-   *  REVERSE LUNGE
-   *  Best from side/angled — need to see front + back leg bend
-   * ══════════════════════════════════════════════════════════ */
-  reverse_lunge: {
-    label: "Reverse Lunge",
-    type: "rep",
-    preferredAngles: ["side", "angled"],
-    angleHint: "Stand sideways to camera for clear leg tracking",
-    bodyOrientation: "upright",
-    requiredLandmarks: [LM.L_HIP, LM.R_HIP, LM.L_KNEE, LM.R_KNEE, LM.L_ANKLE, LM.R_ANKLE, LM.L_SHOULDER, LM.R_SHOULDER],
-
-    computeAngles(p) {
-      const lKnee = calculateAngle(p[LM.L_HIP], p[LM.L_KNEE], p[LM.L_ANKLE]);
-      const rKnee = calculateAngle(p[LM.R_HIP], p[LM.R_KNEE], p[LM.R_ANKLE]);
-      const primary = Math.min(lKnee, rKnee); // lunging leg
-      const secondary = Math.max(lKnee, rKnee); // front leg
-      const torsoTilt = Math.abs(tiltFromVertical(
-        mid(p[LM.L_HIP], p[LM.R_HIP]),
-        mid(p[LM.L_SHOULDER], p[LM.R_SHOULDER])
-      ));
-      // Hip level check
-      const hipTilt = Math.abs(p[LM.L_HIP].y - p[LM.R_HIP].y) * 100;
-      // Stance width (how far apart feet are — should be meaningful for a lunge)
-      const stanceWidth = Math.abs(p[LM.L_ANKLE].y - p[LM.R_ANKLE].y) * 100;
-      return { primary, secondary, torsoTilt, hipTilt, stanceWidth };
-    },
-
-    phases: ["READY", "STEPPING_BACK", "BOTTOM", "RETURNING", "COMPLETE"],
-    thresholds: { startStanding: 158, enterBottom: 102, standBack: 158 },
-    minTransitionMs: 220,
-    minROM: 48,
-    minRepDurationMs: 1200,
-    minVelocity: 12,
-
-    validateAngle(cam) {
-      return cam.viewAngle === "side" || cam.viewAngle === "angled";
-    },
-
-    transitionRules(a, phase) {
-      const t = this.thresholds;
-      switch (phase) {
-        case "READY":         return (a.primary > t.startStanding && a.secondary > t.startStanding) ? "STEPPING_BACK" : null;
-        case "STEPPING_BACK": return a.primary < t.enterBottom ? "BOTTOM" : null;
-        case "BOTTOM":        return a.primary > t.enterBottom + 12 ? "RETURNING" : null;
-        case "RETURNING":     return a.primary > t.standBack ? "COMPLETE" : null;
-        default: return null;
-      }
-    },
-
-    stabilityChecks(a) {
-      if (a.torsoTilt > 30) return { pass: false, reason: "Torso too tilted — stay upright through the lunge" };
-      return { pass: true };
-    },
-
-    checkForm(a, phase, cam) {
-      if (cam && !this.validateAngle(cam)) {
-        return { type: "info", msg: this.angleHint };
-      }
-      if (a.torsoTilt > 22)                return { type: "warning", msg: "Stay upright — don't lean forward" };
-      if (a.hipTilt > 6)                   return { type: "warning", msg: "Keep hips level and square" };
-      if (phase === "BOTTOM" && a.primary > 115) return { type: "warning", msg: "Step deeper — bend rear knee more" };
-      if (phase === "BOTTOM" && a.secondary < 70) return { type: "warning", msg: "Front knee too far forward" };
-      if (phase === "BOTTOM" && a.primary <= 102) return { type: "good", msg: "Good lunge depth — rear knee near floor!" };
-      if (phase === "RETURNING")            return { type: "good", msg: "Drive back up to standing!" };
-      return null;
-    },
-  },
-
-  /* ══════════════════════════════════════════════════════════
-   *  GLUTE BRIDGE
-   *  Best from side view — lying on back, hip extension is sagittal
-   * ══════════════════════════════════════════════════════════ */
-  glute_bridge: {
-    label: "Glute Bridge",
-    type: "rep",
-    preferredAngles: ["side", "angled"],
-    angleHint: "Lie down with camera to your side for best tracking",
-    bodyOrientation: "horizontal",
-    requiredLandmarks: [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP, LM.L_KNEE, LM.R_KNEE, LM.L_ANKLE, LM.R_ANKLE],
-
-    computeAngles(p) {
-      const lHip = calculateAngle(p[LM.L_SHOULDER], p[LM.L_HIP], p[LM.L_KNEE]);
-      const rHip = calculateAngle(p[LM.R_SHOULDER], p[LM.R_HIP], p[LM.R_KNEE]);
-      const primary = (lHip + rHip) / 2;
-      const lKnee = calculateAngle(p[LM.L_HIP], p[LM.L_KNEE], p[LM.L_ANKLE]);
-      const rKnee = calculateAngle(p[LM.R_HIP], p[LM.R_KNEE], p[LM.R_ANKLE]);
-      const kneeAngle = (lKnee + rKnee) / 2;
-      const hipDiff = Math.abs(lHip - rHip);
-      return { primary, kneeAngle, hipDiff };
-    },
-
-    phases: ["READY", "LIFTING", "TOP", "LOWERING", "COMPLETE"],
-    thresholds: { startLow: 108, enterTop: 158, leaveTop: 148, lowerBack: 108 },
-    minTransitionMs: 250,
-    minROM: 40,
-    minRepDurationMs: 1000,
-    minVelocity: 10,
-
-    validateAngle(cam) {
-      return cam.viewAngle === "side" || cam.viewAngle === "angled";
-    },
-
-    transitionRules(a, phase) {
-      const t = this.thresholds;
-      switch (phase) {
-        case "READY":    return a.primary < t.startLow ? "LIFTING" : null;
-        case "LIFTING":  return a.primary > t.enterTop ? "TOP" : null;
-        case "TOP":      return a.primary < t.leaveTop ? "LOWERING" : null;
-        case "LOWERING": return a.primary < t.lowerBack ? "COMPLETE" : null;
-        default: return null;
-      }
-    },
-
-    stabilityChecks(a) {
-      if (a.hipDiff > 20) return { pass: false, reason: "Hips tilting unevenly — don't count" };
-      return { pass: true };
-    },
-
-    checkForm(a, phase, cam) {
-      if (cam && !this.validateAngle(cam)) {
-        return { type: "info", msg: this.angleHint };
-      }
-      if (a.hipDiff > 14)                   return { type: "warning", msg: "Keep hips level — don't tilt" };
-      if (phase === "TOP" && a.primary < 152) return { type: "warning", msg: "Squeeze higher — full hip extension" };
-      if (phase === "TOP" && a.primary >= 160) return { type: "good", msg: "Great hip extension! 🍑" };
-      if (phase === "LOWERING")              return { type: "good", msg: "Lower with control — don't drop" };
-      return null;
-    },
-  },
-
-  /* ══════════════════════════════════════════════════════════
-   *  DEAD BUG
-   *  Best from front view (lying on back, camera above/in front)
-   *  or side view
-   * ══════════════════════════════════════════════════════════ */
-  dead_bug: {
-    label: "Dead Bug",
-    type: "rep",
-    preferredAngles: ["side", "angled", "front"],
-    angleHint: "Lie on your back — camera from front or side works",
-    bodyOrientation: "horizontal",
-    requiredLandmarks: [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP, LM.L_KNEE, LM.R_KNEE, LM.L_WRIST, LM.R_WRIST],
-
-    computeAngles(p) {
-      const lHip = calculateAngle(p[LM.L_SHOULDER], p[LM.L_HIP], p[LM.L_KNEE]);
-      const rHip = calculateAngle(p[LM.R_SHOULDER], p[LM.R_HIP], p[LM.R_KNEE]);
-      const maxExtension = Math.max(lHip, rHip);
-      const minExtension = Math.min(lHip, rHip);
-      const lArm = calculateAngle(p[LM.L_HIP], p[LM.L_SHOULDER], p[LM.L_WRIST]);
-      const rArm = calculateAngle(p[LM.R_HIP], p[LM.R_SHOULDER], p[LM.R_WRIST]);
-      const armExtension = Math.max(lArm, rArm);
-      const hipDiff = Math.abs(p[LM.L_HIP].y - p[LM.R_HIP].y) * 100;
-      return { primary: maxExtension, minExtension, armExtension, hipDiff };
-    },
-
-    phases: ["READY", "EXTENDING", "EXTENDED", "RETURNING", "COMPLETE"],
-    thresholds: { startTucked: 98, enterExtended: 148, returnTucked: 98 },
-    minTransitionMs: 300,
-    minROM: 40,
-    minRepDurationMs: 1200,
-    minVelocity: 8,
-
-    validateAngle(cam) {
-      // Dead bug works from any angle as long as limbs are visible
-      return true;
-    },
-
-    transitionRules(a, phase) {
-      const t = this.thresholds;
-      switch (phase) {
-        case "READY":     return a.primary < t.startTucked ? "EXTENDING" : null;
-        case "EXTENDING": return a.primary > t.enterExtended ? "EXTENDED" : null;
-        case "EXTENDED":  return a.primary < t.enterExtended - 12 ? "RETURNING" : null;
-        case "RETURNING": return a.primary < t.returnTucked ? "COMPLETE" : null;
-        default: return null;
-      }
-    },
-
-    stabilityChecks(a) {
-      if (a.hipDiff > 7) return { pass: false, reason: "Core unstable — hips rocking too much" };
-      return { pass: true };
-    },
-
-    checkForm(a, phase, cam) {
-      if (cam && !this.validateAngle(cam)) {
-        return { type: "info", msg: this.angleHint };
-      }
-      if (a.hipDiff > 5)                                 return { type: "warning", msg: "Keep hips still — don't rock" };
-      if (phase === "EXTENDED" && a.armExtension < 120)   return { type: "warning", msg: "Reach arm overhead fully" };
-      if (phase === "EXTENDED" && a.primary >= 148)       return { type: "good", msg: "Full extension — great control! 🎯" };
-      if (phase === "RETURNING")                          return { type: "good", msg: "Move with control — slow and steady" };
+      if (phase === "ASCENDING")               return { type: "good", msg: "Push strong; full lockout!" };
+      if (phase === "READY")                   return { type: "good", msg: "Good plank position; begin!" };
       return null;
     },
   },
@@ -1326,73 +1176,11 @@ const EXERCISE_PROFILES = {
       if (cam && !this.validateAngle(cam)) {
         return { type: "info", msg: this.angleHint };
       }
-      if (phase !== "HOLDING") return { type: "info", msg: "Get into plank position — straight body line" };
-      if (a.hipDeviation > 7)  return { type: "warning", msg: "Hips sagging — tighten your core" };
-      if (a.hipDeviation < -8) return { type: "warning", msg: "Hips too high — flatten out" };
-      if (a.primary < 155)     return { type: "warning", msg: "Straighten your body — maintain alignment" };
-      return { type: "good", msg: "Solid plank — hold steady! 💎" };
-    },
-  },
-
-  /* ══════════════════════════════════════════════════════════
-   *  MOUNTAIN CLIMBER
-   *  Side/angled view to see knee drive and plank alignment
-   * ══════════════════════════════════════════════════════════ */
-  mountain_climber: {
-    label: "Mountain Climber",
-    type: "rep",
-    preferredAngles: ["side", "angled"],
-    angleHint: "Camera to the side — need to see knee drive clearly",
-    bodyOrientation: "horizontal",
-    requiredLandmarks: [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP, LM.L_KNEE, LM.R_KNEE, LM.L_ANKLE, LM.R_ANKLE],
-
-    computeAngles(p) {
-      const lHip = calculateAngle(p[LM.L_SHOULDER], p[LM.L_HIP], p[LM.L_KNEE]);
-      const rHip = calculateAngle(p[LM.R_SHOULDER], p[LM.R_HIP], p[LM.R_KNEE]);
-      const primary = Math.min(lHip, rHip);   // driving leg
-      const secondary = Math.max(lHip, rHip); // extended leg
-      const lBody = calculateAngle(p[LM.L_SHOULDER], p[LM.L_HIP], p[LM.L_ANKLE]);
-      const rBody = calculateAngle(p[LM.R_SHOULDER], p[LM.R_HIP], p[LM.R_ANKLE]);
-      const bodyLine = (lBody + rBody) / 2;
-      return { primary, secondary, bodyLine };
-    },
-
-    phases: ["READY", "DRIVING", "TUCKED", "EXTENDING", "COMPLETE"],
-    thresholds: { startExtended: 152, enterTucked: 98, extendBack: 148 },
-    minTransitionMs: 120,   // fast exercise
-    minROM: 40,
-    minRepDurationMs: 400,  // mountain climbers are fast
-    minVelocity: 25,
-
-    validateAngle(cam) {
-      return cam.viewAngle === "side" || cam.viewAngle === "angled";
-    },
-
-    transitionRules(a, phase) {
-      const t = this.thresholds;
-      switch (phase) {
-        case "READY":     return a.secondary > t.startExtended ? "DRIVING" : null;
-        case "DRIVING":   return a.primary < t.enterTucked ? "TUCKED" : null;
-        case "TUCKED":    return a.primary > t.enterTucked + 12 ? "EXTENDING" : null;
-        case "EXTENDING": return a.primary > t.extendBack ? "COMPLETE" : null;
-        default: return null;
-      }
-    },
-
-    stabilityChecks(a) {
-      if (a.bodyLine < 130) return { pass: false, reason: "Plank position lost — hips too high" };
-      return { pass: true };
-    },
-
-    checkForm(a, phase, cam) {
-      if (cam && !this.validateAngle(cam)) {
-        return { type: "info", msg: this.angleHint };
-      }
-      if (a.bodyLine < 140)                          return { type: "warning", msg: "Keep hips down — maintain plank" };
-      if (phase === "TUCKED" && a.primary > 108)     return { type: "warning", msg: "Drive knee higher — full tuck" };
-      if (phase === "TUCKED" && a.primary <= 98)     return { type: "good", msg: "Great drive! 🔥" };
-      if (phase === "EXTENDING")                     return { type: "good", msg: "Keep the pace — stay controlled!" };
-      return null;
+      if (phase !== "HOLDING") return { type: "info", msg: "Get into plank position; straight body line" };
+      if (a.hipDeviation > 7)  return { type: "warning", msg: "Hips sagging; tighten your core" };
+      if (a.hipDeviation < -8) return { type: "warning", msg: "Hips too high; flatten out" };
+      if (a.primary < 155)     return { type: "warning", msg: "Straighten your body; maintain alignment" };
+      return { type: "good", msg: "Solid plank; hold steady! 💎" };
     },
   },
 };
@@ -1405,7 +1193,7 @@ const EXERCISE_PROFILES = {
  * counting a false positive).
  *
  * Anti-false-positive layers:
- *  1. Camera angle validation — wrong angle blocks counting
+ *  1. Camera angle validation; wrong angle blocks counting
  *  2. Landmark visibility gating
  *  3. Phase-based state machine (must complete full cycle)
  *  4. Min time-in-phase (hysteresis)
@@ -1545,7 +1333,7 @@ export class GymMetricEngine {
       (group) => group.every((idx) => vis(pts[idx]))
     );
     if (!allRequiredVisible || !oneAlternativeVisible) {
-      return this._result(profile, "Can't see key joints — adjust your position", "warning");
+      return this._result(profile, "Can't see key joints; adjust your position", "warning");
     }
 
     // ── Camera angle detection ────────────────────────────
@@ -1638,7 +1426,7 @@ export class GymMetricEngine {
           this._noRepFrames = 0;
           this._stabilityFailCount = 0;
         } else {
-          // Don't count — but still let the cycle continue
+          // Do not count; but still let the cycle continue
           // If stability failed, note it for feedback
           if (!stabilityResult.pass) {
             this._stabilityFailCount++;
@@ -1646,7 +1434,7 @@ export class GymMetricEngine {
             this._feedbackCooldown = now + 1200;
           }
           if (!hasMinROM) {
-            this._lastFeedback = { type: "warning", msg: "Partial rep — go through full range of motion" };
+            this._lastFeedback = { type: "warning", msg: "Partial rep; go through full range of motion" };
             this._feedbackCooldown = now + 1200;
           }
           if (!hasMinVelocity) {
@@ -1706,7 +1494,7 @@ export class GymMetricEngine {
       feedbackResult = this._lastFeedback;
     }
 
-    const feedback = feedbackResult ? feedbackResult.msg : "Good form — keep going! 💪";
+    const feedback = feedbackResult ? feedbackResult.msg : "Good form; keep going! 💪";
     const feedbackType = feedbackResult ? feedbackResult.type : "good";
 
     return {

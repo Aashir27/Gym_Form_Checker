@@ -82,7 +82,7 @@ exerciseSelect.addEventListener("change", () => {
   engine.reset();
   repCountEl.textContent = "0";
   updateRepLabel();
-  feedbackEl.textContent = "Switched — get into position!";
+  feedbackEl.textContent = "Switched; get into position!";
   feedbackEl.className = "value has-good";
   if (phaseIndicatorEl) phaseIndicatorEl.textContent = "";
   if (angleIndicatorEl) {
@@ -535,13 +535,13 @@ function detectFrame() {
         feedbackEl.className = "value has-good";
       }
     } else {
-      feedbackEl.textContent = "Good form — keep going! 💪";
+      feedbackEl.textContent = "Good form; keep going! 💪";
       feedbackEl.className = "value has-good";
     }
   } else {
     ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
     drawCalibrationOverlay(null, "");
-    feedbackEl.textContent = "No pose detected — step into frame";
+    feedbackEl.textContent = "No pose detected; step into frame";
     feedbackEl.className = "value";
   }
 
@@ -552,7 +552,7 @@ function detectFrame() {
 async function main() {
   try {
     await Promise.all([initPoseLandmarker(), startCamera()]);
-    feedbackEl.textContent = "Ready — start your exercise!";
+    feedbackEl.textContent = "Ready; start your exercise!";
     feedbackEl.className = "value has-good";
     detectFrame();
   } catch (err) {
