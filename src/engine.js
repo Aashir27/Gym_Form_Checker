@@ -91,6 +91,250 @@ function vis(pt, threshold = 0.4) {
   return pt && pt.visibility >= threshold;
 }
 
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function point(x, y, visibility = 1) {
+  return { x, y, visibility };
+}
+
+function addPoint(a, b) {
+  return point(a.x + b.x, a.y + b.y, Math.min(a.visibility ?? 1, b.visibility ?? 1));
+}
+
+function subtractPoint(a, b) {
+  return point(a.x - b.x, a.y - b.y, Math.min(a.visibility ?? 1, b.visibility ?? 1));
+}
+
+function scalePoint(a, scalar) {
+  return point(a.x * scalar, a.y * scalar, a.visibility ?? 1);
+}
+
+function lengthPoint(a) {
+  return Math.hypot(a.x, a.y);
+}
+
+function normalizePoint(a) {
+  const len = lengthPoint(a);
+  if (len < 1e-6) return point(0, 0, a.visibility ?? 1);
+  return point(a.x / len, a.y / len, a.visibility ?? 1);
+}
+
+function average(values) {
+  if (!values.length) return null;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function getLandmark(points, idx) {
+  const candidate = points[idx];
+  return vis(candidate) ? candidate : null;
+}
+
+function selectVisibleSide(points, previousSide = null) {
+  const scoreSide = (side) => {
+    const shoulder = getLandmark(points, side === "left" ? LM.L_SHOULDER : LM.R_SHOULDER);
+    const hip = getLandmark(points, side === "left" ? LM.L_HIP : LM.R_HIP);
+    const knee = getLandmark(points, side === "left" ? LM.L_KNEE : LM.R_KNEE);
+    const ankle = getLandmark(points, side === "left" ? LM.L_ANKLE : LM.R_ANKLE);
+    const ear = getLandmark(points, side === "left" ? LM.L_EAR : LM.R_EAR);
+    const nose = getLandmark(points, LM.NOSE);
+
+    const bodyScore = [shoulder, hip, knee, ankle].reduce((sum, item) => sum + (item ? item.visibility : 0), 0);
+    const headScore = ear ? ear.visibility * 1.1 : (nose ? nose.visibility * 0.4 : 0);
+    return bodyScore * 1.2 + headScore;
+  };
+
+  const leftScore = scoreSide("left");
+  const rightScore = scoreSide("right");
+
+  if (leftScore === 0 && rightScore === 0) return null;
+  if (previousSide === "left" && leftScore >= rightScore - 0.12) return "left";
+  if (previousSide === "right" && rightScore >= leftScore - 0.12) return "right";
+  return leftScore >= rightScore ? "left" : "right";
+}
+
+function pickSidePoints(points, side) {
+  if (!side) return null;
+  const isLeft = side === "left";
+  return {
+    side,
+    head: getLandmark(points, isLeft ? LM.L_EAR : LM.R_EAR) || getLandmark(points, LM.NOSE),
+    shoulder: getLandmark(points, isLeft ? LM.L_SHOULDER : LM.R_SHOULDER),
+    elbow: getLandmark(points, isLeft ? LM.L_ELBOW : LM.R_ELBOW),
+    wrist: getLandmark(points, isLeft ? LM.L_WRIST : LM.R_WRIST),
+    hip: getLandmark(points, isLeft ? LM.L_HIP : LM.R_HIP),
+    knee: getLandmark(points, isLeft ? LM.L_KNEE : LM.R_KNEE),
+    ankle: getLandmark(points, isLeft ? LM.L_ANKLE : LM.R_ANKLE),
+  };
+}
+
+function makeGuidePoint(anchor, reference, direction, lengthFactor = 1) {
+  const offset = subtractPoint(reference, anchor);
+  const distance = Math.max(lengthPoint(offset) * lengthFactor, 0.0001);
+  return addPoint(anchor, scalePoint(direction, distance));
+}
+
+function buildStraightnessGuides(sidePoints, includeArm = false) {
+  if (!sidePoints || !sidePoints.shoulder || !sidePoints.hip) return [];
+
+  const guides = [];
+  const torsoDirection = normalizePoint(subtractPoint(sidePoints.shoulder, sidePoints.hip));
+  if (lengthPoint(torsoDirection) < 1e-6) return guides;
+
+  if (sidePoints.knee) {
+    const shoulderGuide = makeGuidePoint(sidePoints.hip, sidePoints.shoulder, torsoDirection, 1);
+    const kneeGuide = makeGuidePoint(sidePoints.hip, sidePoints.knee, scalePoint(torsoDirection, -1), 1);
+    guides.push({ from: shoulderGuide, to: sidePoints.hip, type: "hip" });
+    guides.push({ from: sidePoints.hip, to: kneeGuide, type: "hip" });
+
+    if (sidePoints.ankle) {
+      const hipToKnee = normalizePoint(subtractPoint(sidePoints.knee, sidePoints.hip));
+      const ankleGuide = makeGuidePoint(sidePoints.knee, sidePoints.ankle, scalePoint(hipToKnee, -1), 1);
+      guides.push({ from: kneeGuide, to: ankleGuide, type: "hip" });
+    }
+  }
+
+  if (sidePoints.head) {
+    const earGuide = makeGuidePoint(sidePoints.shoulder, sidePoints.head, scalePoint(torsoDirection, -1), 1);
+    guides.push({ from: earGuide, to: sidePoints.shoulder, type: "neck" });
+  }
+
+  if (includeArm && sidePoints.elbow && sidePoints.wrist) {
+    const elbowGuide = makeGuidePoint(sidePoints.shoulder, sidePoints.elbow, torsoDirection, 0.85);
+    const wristGuide = makeGuidePoint(sidePoints.elbow, sidePoints.wrist, torsoDirection, 0.85);
+    guides.push({ from: sidePoints.shoulder, to: elbowGuide, type: "arm" });
+    guides.push({ from: elbowGuide, to: wristGuide, type: "arm" });
+  }
+
+  return guides;
+}
+
+function debounceFormState(state, rawCorrect, goodFrames = 3, badFrames = 2) {
+  if (!state) return rawCorrect;
+
+  if (!state.initialized) {
+    state.initialized = true;
+    state.isCorrect = rawCorrect;
+    state.goodCount = rawCorrect ? goodFrames : 0;
+    state.badCount = rawCorrect ? 0 : badFrames;
+    return state.isCorrect;
+  }
+
+  if (rawCorrect) {
+    state.goodCount = (state.goodCount || 0) + 1;
+    state.badCount = 0;
+    if (state.goodCount >= goodFrames) {
+      state.isCorrect = true;
+    }
+  } else {
+    state.badCount = (state.badCount || 0) + 1;
+    state.goodCount = 0;
+    if (state.badCount >= badFrames) {
+      state.isCorrect = false;
+    }
+  }
+
+  return !!state.isCorrect;
+}
+
+function getSmoothedMetric(state, key, value, windowSize = 6) {
+  if (!state[key]) state[key] = [];
+  state[key].push(value);
+  if (state[key].length > windowSize) state[key].shift();
+  return average(state[key]);
+}
+
+function analyzeSideViewForm(landmarks, state = {}, options = {}) {
+  const { includeArm = false, hipTolerance = 12, neckTolerance = 12 } = options;
+  const side = selectVisibleSide(landmarks, state.visibleSide);
+
+  if (!side) {
+    return {
+      isCorrect: false,
+      hipAngle: null,
+      neckAngle: null,
+      issues: ["Need a clearer side view"],
+      visibleSide: null,
+      guideLines: [],
+      rawIsCorrect: false,
+    };
+  }
+
+  const points = pickSidePoints(landmarks, side);
+  const missing = !points.shoulder || !points.hip || !points.knee || !points.ankle || !points.head;
+  if (missing) {
+    return {
+      isCorrect: false,
+      hipAngle: null,
+      neckAngle: null,
+      issues: ["Need clearer visibility of shoulder, hip, knee, ankle, and head landmarks"],
+      visibleSide: side,
+      guideLines: [],
+      rawIsCorrect: false,
+    };
+  }
+
+  const hipAngleRaw = calculateAngle(points.shoulder, points.hip, points.knee);
+  const neckAngleRaw = calculateAngle(points.head, points.shoulder, points.hip);
+  const hipAngle = getSmoothedMetric(state, "hipAngles", hipAngleRaw, 6);
+  const neckAngle = getSmoothedMetric(state, "neckAngles", neckAngleRaw, 6);
+
+  const bodyDeviation = Math.abs(hipAngle - 180);
+  const neckDeviation = Math.abs(neckAngle - 180);
+  const hipLineOffset = (points.hip.y - ((points.shoulder.y + points.knee.y) / 2)) * 100;
+
+  const issues = [];
+  const hipBad = bodyDeviation > hipTolerance;
+  const neckBad = neckDeviation > neckTolerance;
+
+  if (hipBad) {
+    if (hipLineOffset > 0.6) {
+      issues.push("hips too low");
+    } else if (hipLineOffset < -0.6) {
+      issues.push("hips too high");
+    } else {
+      issues.push("hip line not straight");
+    }
+  }
+
+  if (neckBad) {
+    issues.push("neck not aligned");
+  }
+
+  const rawIsCorrect = !hipBad && !neckBad;
+  const isCorrect = debounceFormState(state, rawIsCorrect, 3, 2);
+  const guideLines = rawIsCorrect ? [] : buildStraightnessGuides(points, includeArm);
+
+  state.visibleSide = side;
+  state.lastHipAngle = hipAngle;
+  state.lastNeckAngle = neckAngle;
+  state.lastIssues = issues;
+  state.lastGuideLines = guideLines;
+
+  return {
+    isCorrect,
+    hipAngle: Math.round(hipAngle),
+    neckAngle: Math.round(neckAngle),
+    issues,
+    visibleSide: side,
+    guideLines,
+    rawIsCorrect,
+    bodyDeviation,
+    neckDeviation,
+    hipLineOffset,
+    points,
+  };
+}
+
+export function checkPushupForm(landmarks, state = {}) {
+  return analyzeSideViewForm(landmarks, state, { includeArm: true, hipTolerance: 12, neckTolerance: 12 });
+}
+
+export function checkPlankForm(landmarks, state = {}) {
+  return analyzeSideViewForm(landmarks, state, { includeArm: false, hipTolerance: 12, neckTolerance: 12 });
+}
+
 /* ───────────────────────────────────────────────────────────────
  * Camera Angle Detection
  *
@@ -841,6 +1085,7 @@ export class GymMetricEngine {
     this._stabilityFailCount = 0;  // consecutive frames of stability failure
     this._activeArm = null;
     this._maxCycleSpeed = 0;
+    this._formState = {};
   }
 
   static get exerciseKeys() {
@@ -884,6 +1129,7 @@ export class GymMetricEngine {
     this._stabilityFailCount = 0;
     this._activeArm = null;
     this._maxCycleSpeed = 0;
+    this._formState = {};
   }
 
   smoothPoint(idx, pt) {
@@ -948,6 +1194,17 @@ export class GymMetricEngine {
     this._cameraAngle = detectCameraAngle(pts);
     const angleOk = profile.validateAngle ? profile.validateAngle(this._cameraAngle) : true;
 
+    // ── Exercise-specific form validation ─────────────────
+    let formCheck = null;
+    if (activeExercise === "push_up") {
+      formCheck = checkPushupForm(pts, this._formState.push_up || (this._formState.push_up = {}));
+    } else if (activeExercise === "plank") {
+      formCheck = checkPlankForm(pts, this._formState.plank || (this._formState.plank = {}));
+    } else {
+      formCheck = { isCorrect: true, hipAngle: null, neckAngle: null, issues: [], guideLines: [], rawIsCorrect: true };
+    }
+    const formOk = formCheck ? formCheck.isCorrect : true;
+
     // ── Compute angles ────────────────────────────────────
     const angles = profile.computeAngles(pts, this);
 
@@ -989,9 +1246,10 @@ export class GymMetricEngine {
         const hasMinFrames = this._noRepFrames >= (profile.minRepFrames ?? 4);
         const stabilityResult = profile.stabilityChecks ? profile.stabilityChecks(angles) : { pass: true };
         const isAngleOk = angleOk;
+        const isFormOk = activeExercise === "push_up" || activeExercise === "plank" ? formOk : true;
 
         // All checks must pass to count the rep
-        if (hasMinROM && hasMinDuration && hasMinVelocity && hasMinFrames && stabilityResult.pass && isAngleOk) {
+        if (hasMinROM && hasMinDuration && hasMinVelocity && hasMinFrames && stabilityResult.pass && isAngleOk && isFormOk) {
           this.repCount++;
           repJustCounted = true;
           this._noRepFrames = 0;
@@ -1016,6 +1274,13 @@ export class GymMetricEngine {
             this._lastFeedback = { type: "info", msg: profile.angleHint || "Adjust camera angle" };
             this._feedbackCooldown = now + 1500;
           }
+          if (!isFormOk) {
+            const message = formCheck?.issues?.length
+              ? `Fix form: ${formCheck.issues.join(" and ")}`
+              : "Fix your body line before counting reps";
+            this._lastFeedback = { type: "warning", msg: message };
+            this._feedbackCooldown = now + 1200;
+          }
         }
 
         // Cycle back to first active phase regardless
@@ -1037,7 +1302,7 @@ export class GymMetricEngine {
     // ── Hold time tracking ────────────────────────────────
     let holdTime = null;
     if (profile.type === "hold") {
-      if (this.currentPhase === "HOLDING") {
+      if (this.currentPhase === "HOLDING" && formOk) {
         if (this.holdStartTime === 0) {
           this.holdStartTime = now;
         }
@@ -1071,6 +1336,12 @@ export class GymMetricEngine {
       angleOk,
       activeArm: this._activeArm,
       primaryAngle: Math.round(angles.primary),
+      formOk,
+      formIssues: formCheck?.issues || [],
+      formHipAngle: formCheck?.hipAngle ?? null,
+      formNeckAngle: formCheck?.neckAngle ?? null,
+      formGuideLines: formCheck?.guideLines || [],
+      visibleSide: formCheck?.visibleSide || null,
     };
   }
 
@@ -1086,6 +1357,12 @@ export class GymMetricEngine {
       angleOk: true,
       activeArm: this._activeArm,
       primaryAngle: null,
+      formOk: true,
+      formIssues: [],
+      formHipAngle: null,
+      formNeckAngle: null,
+      formGuideLines: [],
+      visibleSide: null,
     };
   }
 }

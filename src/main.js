@@ -190,28 +190,61 @@ btnZoomOut.addEventListener("click", () => {
 });
 
 // ─── Draw Skeleton ────────────────────────────────────────
-function drawSkeleton(landmarks, displayedLandmarks) {
+function projectPoint(point, canvasWidth, canvasHeight) {
+  const videoScale = Math.max(
+    canvasWidth / videoEl.videoWidth,
+    canvasHeight / videoEl.videoHeight
+  );
+  const renderedVideoWidth = videoEl.videoWidth * videoScale;
+  const renderedVideoHeight = videoEl.videoHeight * videoScale;
+  const offsetX = (canvasWidth - renderedVideoWidth) / 2;
+  const offsetY = (canvasHeight - renderedVideoHeight) / 2;
+  return {
+    x: offsetX + point.x * renderedVideoWidth,
+    y: offsetY + point.y * renderedVideoHeight,
+  };
+}
+
+function drawGuideLines(guideLines) {
+  if (!guideLines || guideLines.length === 0) return;
+
+  ctx.save();
+  ctx.strokeStyle = "#00e676";
+  ctx.fillStyle = "#00e676";
+  ctx.shadowColor = "rgba(0, 230, 118, 0.45)";
+  ctx.shadowBlur = 14;
+  ctx.lineWidth = 4;
+  ctx.lineCap = "round";
+
+  for (const guide of guideLines) {
+    if (!guide?.from || !guide?.to) continue;
+    const from = projectPoint(guide.from, canvasEl.width, canvasEl.height);
+    const to = projectPoint(guide.to, canvasEl.width, canvasEl.height);
+    ctx.beginPath();
+    ctx.moveTo(from.x, from.y);
+    ctx.lineTo(to.x, to.y);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(to.x, to.y, 4, 0, 2 * Math.PI);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+function drawSkeleton(landmarks, displayedLandmarks, guideLines = [], formOk = true) {
   ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
 
   if (!landmarks || landmarks.length === 0 || !videoEl.videoWidth || !videoEl.videoHeight) return;
 
   const visible = new Set(displayedLandmarks);
-  const videoScale = Math.max(
-    canvasEl.width / videoEl.videoWidth,
-    canvasEl.height / videoEl.videoHeight
-  );
-  const renderedVideoWidth = videoEl.videoWidth * videoScale;
-  const renderedVideoHeight = videoEl.videoHeight * videoScale;
-  const offsetX = (canvasEl.width - renderedVideoWidth) / 2;
-  const offsetY = (canvasEl.height - renderedVideoHeight) / 2;
-  const project = (point) => ({
-    x: offsetX + point.x * renderedVideoWidth,
-    y: offsetY + point.y * renderedVideoHeight,
-  });
+  const project = (point) => projectPoint(point, canvasEl.width, canvasEl.height);
   const baseColor = colorPicker.value;
+  const connectionColor = formOk ? baseColor : "#ff5252";
 
   // Draw connections
-  ctx.strokeStyle = baseColor + "b3";
+  ctx.strokeStyle = connectionColor + "b3";
   ctx.lineWidth = 3;
   ctx.lineCap = "round";
 
@@ -238,14 +271,18 @@ function drawSkeleton(landmarks, displayedLandmarks) {
     // Outer glow
     ctx.beginPath();
     ctx.arc(x, y, 6, 0, 2 * Math.PI);
-    ctx.fillStyle = baseColor + "4d";
+    ctx.fillStyle = connectionColor + "4d";
     ctx.fill();
 
     // Inner dot
     ctx.beginPath();
     ctx.arc(x, y, 3.5, 0, 2 * Math.PI);
-    ctx.fillStyle = baseColor;
+    ctx.fillStyle = connectionColor;
     ctx.fill();
+  }
+
+  if (!formOk) {
+    drawGuideLines(guideLines);
   }
 }
 
@@ -291,7 +328,9 @@ function detectFrame() {
     // easier to read and avoids presenting unrelated limbs as active inputs.
     drawSkeleton(
       landmarks,
-      GymMetricEngine.getDisplayLandmarks(activeExercise, evaluation.activeArm)
+      GymMetricEngine.getDisplayLandmarks(activeExercise, evaluation.activeArm),
+      evaluation.formGuideLines,
+      evaluation.formOk
     );
 
     // Update rep count or hold time
@@ -325,7 +364,13 @@ function detectFrame() {
     }
 
     // Update feedback with type-aware styling
-    if (evaluation.feedback && evaluation.feedback.length > 0) {
+    if ((activeExercise === "push_up" || activeExercise === "plank") && evaluation.formIssues && evaluation.formIssues.length > 0) {
+      const correctionMsg = evaluation.formIssues.length === 1
+        ? evaluation.formIssues[0]
+        : evaluation.formIssues.join(" + ");
+      feedbackEl.textContent = `Fix form: ${correctionMsg}`;
+      feedbackEl.className = "value has-warning";
+    } else if (evaluation.feedback && evaluation.feedback.length > 0) {
       feedbackEl.textContent = evaluation.feedback;
       if (evaluation.feedbackType === "warning") {
         feedbackEl.className = "value has-warning";
