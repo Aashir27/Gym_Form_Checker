@@ -1008,9 +1008,13 @@ const EXERCISE_PROFILES = {
       // shoulder-hip torso line (normalized by torso length) so any
       // forward/backward swing or chicken-wing outward drift is caught
       // independently of the angle-based check.
+      //
+      // Thresholds are intentionally forgiving: a perfect 180 deg / 0
+      // offset is unrealistic even in textbook form; we only block reps
+      // when the user is clearly swinging the elbow and cheating the rep.
       const driftFromInline = Math.abs(a.driftAngle - 180);
-      const driftFail = driftFromInline > 15;
-      const offsetFail = (a.elbowDelta ?? 0) > 0.22;
+      const driftFail = driftFromInline > 42;
+      const offsetFail = (a.elbowDelta ?? 0) > 0.55;
       if (driftFail && offsetFail) {
         return { pass: false, reason: "Elbow moving too much; keep it pinned to your side" };
       }
@@ -1032,11 +1036,14 @@ const EXERCISE_PROFILES = {
       const offset = a.elbowDelta ?? 0;
 
       // Real-time form feedback before the stability check blocks a rep.
-      if (driftFromInline > 12 || offset > 0.18) {
-        if (offset > 0.18 && driftFromInline > 12) {
+      // Use looser warning thresholds than the rep-block thresholds so
+      // users receive gentle coaching rather than being nagged on every
+      // tiny deviation that still counts as good form.
+      if (driftFromInline > 30 || offset > 0.42) {
+        if (offset > 0.42 && driftFromInline > 30) {
           return { type: "warning", msg: "Elbow moving; keep it pinned to your side" };
         }
-        if (offset > 0.18) {
+        if (offset > 0.42) {
           return { type: "warning", msg: "Elbow out of line; keep it inline with body" };
         }
         return { type: "warning", msg: "Keep upper arm still; only the forearm moves" };
