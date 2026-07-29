@@ -60,7 +60,7 @@ const LM = {
 
 /** 
  * Scale-Invariant Vector Math using Math.atan2.
- * Calculates absolute internal angle between 0 and 180 degrees.
+ * Calculates absolute internal angle between 0 and 180 degrees (2D).
  */
 export function calculateAngle(a, b, c) {
   let radians = Math.atan2(c.y - b.y, c.x - b.x) - Math.atan2(a.y - b.y, a.x - b.x);
@@ -69,6 +69,39 @@ export function calculateAngle(a, b, c) {
     angle = 360.0 - angle;
   }
   return angle;
+}
+
+/**
+ * 3D world-landmark angle calculation.
+ * Computes the absolute internal angle at vertex b formed by segments
+ * a→b and b→c, using the full 3D vectors from MediaPipe worldLandmarks.
+ * This uses the dot-product method which is inherently scale- and
+ * position-invariant, making it robust to camera distance and pose.
+ */
+export function calculateAngle3D(a, b, c) {
+  const ax = a.x - b.x, ay = a.y - b.y, az = a.z - b.z;
+  const bx = c.x - b.x, by = c.y - b.y, bz = c.z - b.z;
+  const dot = ax * bx + ay * by + az * bz;
+  const magA = Math.hypot(ax, ay, az);
+  const magB = Math.hypot(bx, by, bz);
+  if (magA < 1e-8 || magB < 1e-8) return 0;
+  const cos = clamp(dot / (magA * magB), -1, 1);
+  return Math.acos(cos) * (180.0 / Math.PI);
+}
+
+/** 3D Euclidean distance between two world landmarks. */
+function dist3D(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+/** Midpoint of two 3D landmarks. */
+function mid3D(a, b) {
+  return {
+    x: (a.x + b.x) / 2,
+    y: (a.y + b.y) / 2,
+    z: (a.z + b.z) / 2,
+    visibility: Math.min(a.visibility ?? 1, b.visibility ?? 1),
+  };
 }
 
 /** Signed tilt of segment a→b from vertical (positive = tilted right). */
@@ -246,7 +279,16 @@ function getSmoothedMetric(state, key, value, windowSize = 6) {
 }
 
 function analyzeSideViewForm(landmarks, state = {}, options = {}) {
-  const { includeArm = false, hipTolerance = 12, neckTolerance = 12 } = options;
+  const {
+    includeArm = false,
+    hipTolerance = 12,
+    neckTolerance = 12,
+    worldLandmarks = null,
+    baselineHipAngle = null,
+    baselineNeckAngle = null,
+    useBaselineRelative = false,
+  } = options;
+
   const side = selectVisibleSide(landmarks, state.visibleSide);
 
   if (!side) {
@@ -275,17 +317,43 @@ function analyzeSideViewForm(landmarks, state = {}, options = {}) {
     };
   }
 
-  const hipAngleRaw = calculateAngle(points.shoulder, points.hip, points.knee);
-  const neckAngleRaw = calculateAngle(points.head, points.shoulder, points.hip);
+  let hipAngleRaw;
+  let neckAngleRaw;
+  if (worldLandmarks && worldLandmarks.length >= 33) {
+    const isLeft = side === "left";
+    const wShoulder = getLandmark(worldLandmarks, isLeft ? LM.L_SHOULDER : LM.R_SHOULDER);
+    const wHip = getLandmark(worldLandmarks, isLeft ? LM.L_HIP : LM.R_HIP);
+    const wKnee = getLandmark(worldLandmarks, isLeft ? LM.L_KNEE : LM.R_KNEE);
+    const wHead = getLandmark(worldLandmarks, isLeft ? LM.L_EAR : LM.R_EAR) || getLandmark(worldLandmarks, LM.NOSE);
+    if (wShoulder && wHip && wKnee && wHead) {
+      hipAngleRaw = calculateAngle3D(wShoulder, wHip, wKnee);
+      neckAngleRaw = calculateAngle3D(wHead, wShoulder, wHip);
+    } else {
+      hipAngleRaw = calculateAngle(points.shoulder, points.hip, points.knee);
+      neckAngleRaw = calculateAngle(points.head, points.shoulder, points.hip);
+    }
+  } else {
+    hipAngleRaw = calculateAngle(points.shoulder, points.hip, points.knee);
+    neckAngleRaw = calculateAngle(points.head, points.shoulder, points.hip);
+  }
+
   const hipAngle = getSmoothedMetric(state, "hipAngles", hipAngleRaw, 6);
   const neckAngle = getSmoothedMetric(state, "neckAngles", neckAngleRaw, 6);
 
-  const bodyDeviation = Math.abs(hipAngle - 180);
-  const neckDeviation = Math.abs(neckAngle - 180);
+  let hipDeviation;
+  let neckDeviation;
+  if (useBaselineRelative && baselineHipAngle !== null && baselineNeckAngle !== null) {
+    hipDeviation = Math.abs(hipAngle - baselineHipAngle);
+    neckDeviation = Math.abs(neckAngle - baselineNeckAngle);
+  } else {
+    hipDeviation = Math.abs(hipAngle - 180);
+    neckDeviation = Math.abs(neckAngle - 180);
+  }
+
   const hipLineOffset = (points.hip.y - ((points.shoulder.y + points.knee.y) / 2)) * 100;
 
   const issues = [];
-  const hipBad = bodyDeviation > hipTolerance;
+  const hipBad = hipDeviation > hipTolerance;
   const neckBad = neckDeviation > neckTolerance;
 
   if (hipBad) {
@@ -320,19 +388,303 @@ function analyzeSideViewForm(landmarks, state = {}, options = {}) {
     visibleSide: side,
     guideLines,
     rawIsCorrect,
-    bodyDeviation,
+    bodyDeviation: hipDeviation,
     neckDeviation,
     hipLineOffset,
     points,
   };
 }
 
-export function checkPushupForm(landmarks, state = {}) {
-  return analyzeSideViewForm(landmarks, state, { includeArm: true, hipTolerance: 12, neckTolerance: 12 });
+export function checkPushupForm(landmarks, state = {}, options = {}) {
+  return analyzeSideViewForm(landmarks, state, { includeArm: true, hipTolerance: 12, neckTolerance: 12, ...options });
 }
 
-export function checkPlankForm(landmarks, state = {}) {
-  return analyzeSideViewForm(landmarks, state, { includeArm: false, hipTolerance: 12, neckTolerance: 12 });
+export function checkPlankForm(landmarks, state = {}, options = {}) {
+  return analyzeSideViewForm(landmarks, state, { includeArm: false, hipTolerance: 12, neckTolerance: 12, ...options });
+}
+
+/* ───────────────────────────────────────────────────────────────
+ * Push-up / Plank: Pre-Calibration Orientation Validation
+ *
+ * Runs before the 3-second calibration window to ensure the user
+ * is positioned correctly (side-on) with high-confidence landmarks.
+ * ─────────────────────────────────────────────────────────────── */
+
+/**
+ * Validate that the user is positioned correctly for push-up / plank
+ * calibration. Checks:
+ *   1. Shoulder / hip / knee visibility confidence on the active side
+ *   2. 3D horizontal separation between left & right shoulders
+ *      (insufficient separation = user is facing camera, not side-on)
+ *
+ * @param {Array} landmarks 2D image-space landmarks
+ * @param {Array} worldLandmarks 3D world-space landmarks (meters)
+ * @param {number} confThreshold Min visibility confidence (default 0.4)
+ * @param {number} minShoulderSepMeters Min 3D x-axis separation (default 0.12m = ~4.7in)
+ * @returns {{ pass: boolean, message: string|null }}
+ */
+export function validatePushupPlankOrientation(landmarks, worldLandmarks, confThreshold = 0.4, minShoulderSepMeters = 0.12) {
+  if (!landmarks || landmarks.length < 33) {
+    return { pass: false, message: "Please turn side-on to the camera" };
+  }
+
+  const side = selectVisibleSide(landmarks, null);
+  if (!side) {
+    return { pass: false, message: "Please turn side-on to the camera" };
+  }
+
+  const isLeft = side === "left";
+  const shoulder = getLandmark(landmarks, isLeft ? LM.L_SHOULDER : LM.R_SHOULDER);
+  const hip = getLandmark(landmarks, isLeft ? LM.L_HIP : LM.R_HIP);
+  const knee = getLandmark(landmarks, isLeft ? LM.L_KNEE : LM.R_KNEE);
+  const lShoulder = getLandmark(landmarks, LM.L_SHOULDER);
+  const rShoulder = getLandmark(landmarks, LM.R_SHOULDER);
+
+  if (!shoulder || !hip || !knee || !lShoulder || !rShoulder) {
+    return { pass: false, message: "Please turn side-on to the camera" };
+  }
+
+  if (
+    (shoulder.visibility ?? 0) < confThreshold ||
+    (hip.visibility ?? 0) < confThreshold ||
+    (knee.visibility ?? 0) < confThreshold ||
+    (lShoulder.visibility ?? 0) < confThreshold ||
+    (rShoulder.visibility ?? 0) < confThreshold
+  ) {
+    return { pass: false, message: "Please turn side-on to the camera" };
+  }
+
+  if (worldLandmarks && worldLandmarks.length >= 33) {
+    const wLSh = worldLandmarks[LM.L_SHOULDER];
+    const wRSh = worldLandmarks[LM.R_SHOULDER];
+    if (wLSh && wRSh) {
+      const shoulderSeparationX = Math.abs(wLSh.x - wRSh.x);
+      if (shoulderSeparationX < minShoulderSepMeters) {
+        return { pass: false, message: "Please turn side-on to the camera" };
+      }
+    }
+  } else {
+    const shoulderSeparationX = Math.abs(lShoulder.x - rShoulder.x);
+    if (shoulderSeparationX < 0.05) {
+      return { pass: false, message: "Please turn side-on to the camera" };
+    }
+  }
+
+  return { pass: true, message: null };
+}
+
+/* ───────────────────────────────────────────────────────────────
+ * Push-up / Plank: 3-Second Calibration Manager
+ *
+ * Collects hip & neck angles from stable 3D world landmarks over a
+ * 3-second window, averages them for session-specific baselines,
+ * and runs sanity / variance / confidence checks before accepting.
+ * ─────────────────────────────────────────────────────────────── */
+
+const CALIBRATION_WINDOW_MS = 3000;
+const CALIBRATION_REJECT_DISPLAY_MS = 900;
+const CALIBRATION_MIN_SAMPLES = 15;
+const CALIBRATION_HIP_MIN = 160;
+const CALIBRATION_HIP_MAX = 200;
+const CALIBRATION_NECK_MIN = 150;
+const CALIBRATION_NECK_MAX = 190;
+const CALIBRATION_MAX_HIP_VAR = 10;
+const CALIBRATION_MAX_NECK_VAR = 10;
+
+export class PushupPlankCalibrator {
+  constructor() {
+    this.reset();
+  }
+
+  reset() {
+    this.state = "idle"; // idle | orientation_check | calibrating | calibrated | rejected
+    this.startedAt = 0;
+    this.rejectedAt = 0;
+    this.samples = []; // { hipAngle, neckAngle, confOK }
+    this.lastRejectionReason = null;
+    this.baselineHipAngle = null;
+    this.baselineNeckAngle = null;
+  }
+
+  start() {
+    this.state = "calibrating";
+    this.startedAt = performance.now();
+    this.rejectedAt = 0;
+    this.samples = [];
+    this.lastRejectionReason = null;
+  }
+
+  /** Compute std-dev of a number array. */
+  _stddev(arr) {
+    if (arr.length < 2) return 0;
+    const mean = arr.reduce((s, v) => s + v, 0) / arr.length;
+    const variance = arr.reduce((s, v) => s + (v - mean) ** 2, 0) / arr.length;
+    return Math.sqrt(variance);
+  }
+
+  /**
+   * Tick per frame during calibration.
+   * @param {number} now performance.now()
+   * @param {Array} landmarks 2D landmarks
+   * @param {Array} worldLandmarks 3D world landmarks
+   * @param {object} formState reusable smoothing state
+   * @param {"push_up"|"plank"} exercise for context (does not alter math)
+   * @returns {object} { state, progressPct, prompt, rejectionReason, baseline? }
+   */
+  tick(now, landmarks, worldLandmarks, formState, exercise = "push_up") {
+    if (this.state === "idle") {
+      this.start();
+    } else if (this.state === "rejected") {
+      if (this.rejectedAt === 0) {
+        this.rejectedAt = now;
+      }
+      if (now - this.rejectedAt >= CALIBRATION_REJECT_DISPLAY_MS) {
+        this.start();
+      } else {
+        const remaining = 1 - (now - this.rejectedAt) / CALIBRATION_REJECT_DISPLAY_MS;
+        return {
+          state: "rejected",
+          progressPct: clamp(remaining, 0, 1),
+          prompt: null,
+          rejectionReason: this.lastRejectionReason,
+        };
+      }
+    }
+
+    if (this.state === "calibrated") {
+      return {
+        state: "calibrated",
+        progressPct: 1,
+        prompt: null,
+        rejectionReason: null,
+        baselineHipAngle: this.baselineHipAngle,
+        baselineNeckAngle: this.baselineNeckAngle,
+      };
+    }
+
+    const elapsed = now - this.startedAt;
+    const progressPct = clamp(elapsed / CALIBRATION_WINDOW_MS, 0, 1);
+
+    const orientationCheck = validatePushupPlankOrientation(landmarks, worldLandmarks);
+    if (!orientationCheck.pass) {
+      return {
+        state: "orientation_check",
+        progressPct: 0,
+        prompt: orientationCheck.message,
+        rejectionReason: null,
+      };
+    }
+
+    const side = selectVisibleSide(landmarks, formState.visibleSide);
+    if (side) {
+      const isLeft = side === "left";
+      let hipAngleRaw = null;
+      let neckAngleRaw = null;
+      let confOK = false;
+
+      if (worldLandmarks && worldLandmarks.length >= 33) {
+        const wSh = getLandmark(worldLandmarks, isLeft ? LM.L_SHOULDER : LM.R_SHOULDER);
+        const wHip = getLandmark(worldLandmarks, isLeft ? LM.L_HIP : LM.R_HIP);
+        const wKnee = getLandmark(worldLandmarks, isLeft ? LM.L_KNEE : LM.R_KNEE);
+        const wHead = getLandmark(worldLandmarks, isLeft ? LM.L_EAR : LM.R_EAR) || getLandmark(worldLandmarks, LM.NOSE);
+        if (wSh && wHip && wKnee && wHead) {
+          hipAngleRaw = calculateAngle3D(wSh, wHip, wKnee);
+          neckAngleRaw = calculateAngle3D(wHead, wSh, wHip);
+          confOK =
+            (wSh.visibility ?? 0) >= 0.4 &&
+            (wHip.visibility ?? 0) >= 0.4 &&
+            (wKnee.visibility ?? 0) >= 0.4 &&
+            (wHead.visibility ?? 0) >= 0.4;
+        }
+      }
+
+      if (hipAngleRaw === null || neckAngleRaw === null) {
+        const points = pickSidePoints(landmarks, side);
+        if (points.shoulder && points.hip && points.knee && points.head) {
+          hipAngleRaw = calculateAngle(points.shoulder, points.hip, points.knee);
+          neckAngleRaw = calculateAngle(points.head, points.shoulder, points.hip);
+          confOK =
+            (points.shoulder.visibility ?? 0) >= 0.4 &&
+            (points.hip.visibility ?? 0) >= 0.4 &&
+            (points.knee.visibility ?? 0) >= 0.4 &&
+            (points.head.visibility ?? 0) >= 0.4;
+        }
+      }
+
+      if (hipAngleRaw !== null && neckAngleRaw !== null) {
+        this.samples.push({ hipAngle: hipAngleRaw, neckAngle: neckAngleRaw, confOK });
+      }
+    }
+
+    if (elapsed >= CALIBRATION_WINDOW_MS) {
+      const confSamples = this.samples.filter((s) => s.confOK);
+      if (confSamples.length < CALIBRATION_MIN_SAMPLES) {
+        this.state = "rejected";
+        this.rejectedAt = 0;
+        this.lastRejectionReason = "Calibration looks off — check your position and try again";
+        return {
+          state: "rejected",
+          progressPct: 1,
+          prompt: null,
+          rejectionReason: this.lastRejectionReason,
+        };
+      }
+
+      const avgHip = confSamples.reduce((s, v) => s + v.hipAngle, 0) / confSamples.length;
+      const avgNeck = confSamples.reduce((s, v) => s + v.neckAngle, 0) / confSamples.length;
+      const hipVariance = this._stddev(confSamples.map((s) => s.hipAngle));
+      const neckVariance = this._stddev(confSamples.map((s) => s.neckAngle));
+
+      const hipInRange = avgHip >= CALIBRATION_HIP_MIN && avgHip <= CALIBRATION_HIP_MAX;
+      const neckInRange = avgNeck >= CALIBRATION_NECK_MIN && avgNeck <= CALIBRATION_NECK_MAX;
+      const hipStable = hipVariance <= CALIBRATION_MAX_HIP_VAR;
+      const neckStable = neckVariance <= CALIBRATION_MAX_NECK_VAR;
+
+      if (!hipInRange || !neckInRange) {
+        this.state = "rejected";
+        this.rejectedAt = 0;
+        this.lastRejectionReason = "Calibration looks off — check your position and try again";
+        return {
+          state: "rejected",
+          progressPct: 1,
+          prompt: null,
+          rejectionReason: this.lastRejectionReason,
+        };
+      }
+
+      if (!hipStable || !neckStable) {
+        this.state = "rejected";
+        this.rejectedAt = 0;
+        this.lastRejectionReason = "Calibration looks off — hold still and try again";
+        return {
+          state: "rejected",
+          progressPct: 1,
+          prompt: null,
+          rejectionReason: this.lastRejectionReason,
+        };
+      }
+
+      this.baselineHipAngle = Math.round(avgHip);
+      this.baselineNeckAngle = Math.round(avgNeck);
+      this.state = "calibrated";
+      return {
+        state: "calibrated",
+        progressPct: 1,
+        prompt: null,
+        rejectionReason: null,
+        baselineHipAngle: this.baselineHipAngle,
+        baselineNeckAngle: this.baselineNeckAngle,
+      };
+    }
+
+    const posName = exercise === "plank" ? "plank" : "pushup-up";
+    return {
+      state: "calibrating",
+      progressPct,
+      prompt: `Get into your best ${posName} position and hold still`,
+      rejectionReason: null,
+    };
+  }
 }
 
 /* ───────────────────────────────────────────────────────────────
@@ -1086,6 +1438,8 @@ export class GymMetricEngine {
     this._activeArm = null;
     this._maxCycleSpeed = 0;
     this._formState = {};
+    this._calibrator = new PushupPlankCalibrator();
+    this._calibrationState = null; // last calibrator tick result for push_up/plank
   }
 
   static get exerciseKeys() {
@@ -1130,6 +1484,8 @@ export class GymMetricEngine {
     this._activeArm = null;
     this._maxCycleSpeed = 0;
     this._formState = {};
+    this._calibrator.reset();
+    this._calibrationState = null;
   }
 
   smoothPoint(idx, pt) {
@@ -1147,9 +1503,12 @@ export class GymMetricEngine {
 
   /**
    * Main per-frame evaluation.
-   * @returns {{ reps, feedback, feedbackType, holdTime, phase, cameraAngle, angleOk }}
+   * @param {Array} landmarks 2D image-space landmarks
+   * @param {string} activeExercise exercise key
+   * @param {Array} [worldLandmarks] 3D world-space landmarks (meters, hip-centered)
+   * @returns {{ reps, feedback, feedbackType, holdTime, phase, cameraAngle, angleOk, calibrationState }}
    */
-  evaluateFrame(landmarks, activeExercise) {
+  evaluateFrame(landmarks, activeExercise, worldLandmarks = null) {
     const now = performance.now();
     const timeSec = now / 1000;
 
@@ -1165,7 +1524,6 @@ export class GymMetricEngine {
 
     // ── Filter and Smooth Required Landmarks Only ─────────
     const pts = [];
-    // Only process landmarks relevant to the current exercise and camera tracking
     const cameraAngleIndices = [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP];
     const alternativeGroups = profile.requiredLandmarkGroups || [];
     const alternativeIndices = alternativeGroups.flat();
@@ -1194,12 +1552,37 @@ export class GymMetricEngine {
     this._cameraAngle = detectCameraAngle(pts);
     const angleOk = profile.validateAngle ? profile.validateAngle(this._cameraAngle) : true;
 
-    // ── Exercise-specific form validation ─────────────────
+    // ── Push-up / Plank: Calibration gate BEFORE any rep/hold logic ──
+    let calibrationState = null;
     let formCheck = null;
-    if (activeExercise === "push_up") {
-      formCheck = checkPushupForm(pts, this._formState.push_up || (this._formState.push_up = {}));
-    } else if (activeExercise === "plank") {
-      formCheck = checkPlankForm(pts, this._formState.plank || (this._formState.plank = {}));
+    if (activeExercise === "push_up" || activeExercise === "plank") {
+      const fsKey = activeExercise;
+      const formState = this._formState[fsKey] || (this._formState[fsKey] = {});
+      calibrationState = this._calibrator.tick(now, pts, worldLandmarks, formState, activeExercise);
+      this._calibrationState = calibrationState;
+
+      if (calibrationState.state !== "calibrated") {
+        const prompt = calibrationState.rejectionReason || calibrationState.prompt || "Calibrating…";
+        const result = this._result(profile, prompt, "info");
+        result.calibrationState = calibrationState;
+        result.formOk = false;
+        result.formIssues = [];
+        result.formGuideLines = [];
+        return result;
+      }
+
+      const formOpts = {
+        worldLandmarks,
+        baselineHipAngle: this._calibrator.baselineHipAngle,
+        baselineNeckAngle: this._calibrator.baselineNeckAngle,
+        useBaselineRelative: true,
+      };
+
+      if (activeExercise === "push_up") {
+        formCheck = checkPushupForm(pts, formState, formOpts);
+      } else {
+        formCheck = checkPlankForm(pts, formState, formOpts);
+      }
     } else {
       formCheck = { isCorrect: true, hipAngle: null, neckAngle: null, issues: [], guideLines: [], rawIsCorrect: true };
     }
@@ -1342,6 +1725,7 @@ export class GymMetricEngine {
       formNeckAngle: formCheck?.neckAngle ?? null,
       formGuideLines: formCheck?.guideLines || [],
       visibleSide: formCheck?.visibleSide || null,
+      calibrationState,
     };
   }
 

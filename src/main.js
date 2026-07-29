@@ -293,6 +293,131 @@ function formatHoldTime(seconds) {
   return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
 
+/**
+ * Draw calibration overlay UI on the canvas.
+ * - During push_up / plank exercises, shows:
+ *   - Orientation-warning prompt ("Please turn side-on…")
+ *   - 3-second progress bar + "Get into your best … position and hold still"
+ *   - Rejection banner + restart hint
+ */
+function drawCalibrationOverlay(calState, activeExercise) {
+  if (!calState || calState.state === "calibrated" || (activeExercise !== "push_up" && activeExercise !== "plank")) {
+    return;
+  }
+
+  const w = canvasEl.width;
+  const h = canvasEl.height;
+  if (!w || !h) return;
+
+  const cx = w / 2;
+  const barOuterW = Math.min(w * 0.55, 480);
+  const barOuterH = 22;
+  const barY = h / 2 - 20;
+
+  ctx.save();
+
+  // Backdrop (subtle dark box behind text
+  ctx.fillStyle = "rgba(10, 10, 20, 0.55)";
+  const padX = 28;
+  const padY = 22;
+  const boxH = 150;
+  const boxW = Math.max(barOuterW + padX * 2, 460);
+  const boxX = cx - boxW / 2;
+  const boxY = barY - 60;
+  ctx.beginPath();
+  roundRect(ctx, boxX, boxY, boxW, boxH, 18);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(255,255,255,0.08)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Title
+  const msg = calState.rejectionReason || calState.prompt || "Calibrating…";
+  const isRejection = !!calState.rejectionReason;
+  const isOrient = calState.state === "orientation_check";
+  ctx.font = `600 ${Math.max(14, Math.round(w * 0.02))}px Inter, -apple-system, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  if (isRejection) {
+    ctx.fillStyle = "#ffab40";
+    ctx.shadowColor = "rgba(255,171,64,0.35)";
+    ctx.shadowBlur = 16;
+  } else if (isOrient) {
+    ctx.fillStyle = "#ffab40";
+    ctx.shadowColor = "rgba(255,171,64,0.3)";
+    ctx.shadowBlur = 12;
+  } else {
+    ctx.fillStyle = "#ffffff";
+    ctx.shadowColor = "rgba(108,92,231,0.3)";
+    ctx.shadowBlur = 10;
+  }
+  ctx.fillText(msg, cx, barY - 28);
+
+  // Subtitle
+  ctx.shadowBlur = 0;
+  ctx.font = `500 ${Math.max(11, Math.round(w * 0.014))}px Inter, -apple-system, sans-serif`;
+  if (isRejection) {
+    ctx.fillStyle = "rgba(255,255,255,0.75)";
+    ctx.fillText("Window will restart automatically", cx, barY - 2);
+  } else if (isOrient) {
+    ctx.fillStyle = "rgba(255,255,255,0.7)";
+    ctx.fillText("Side profile view needed for accurate 3D form tracking", cx, barY - 2);
+  } else {
+    ctx.fillStyle = "rgba(255,255,255,0.7)";
+    ctx.fillText("Session will begin automatically", cx, barY - 2);
+  }
+
+  // Progress bar background
+  const barX = cx - barOuterW / 2;
+  const barR = barOuterH / 2;
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = "rgba(255,255,255,0.1)";
+  ctx.beginPath();
+  roundRect(ctx, barX, barY, barOuterW, barOuterH, barR);
+  ctx.fill();
+
+  // Progress fill
+  const progress = typeof calState.progressPct === "number" ? calState.progressPct : 0;
+  const innerW = Math.max(0, Math.min(1, progress) * barOuterW);
+  const grad = ctx.createLinearGradient(barX, 0, barX + barOuterW, 0);
+  if (isRejection || isOrient) {
+    grad.addColorStop(0, "#ffab40");
+    grad.addColorStop(1, "#ff5252");
+  } else {
+    grad.addColorStop(0, "#6c5ce7");
+    grad.addColorStop(0.5, "#00e676");
+    grad.addColorStop(1, "#69f0ae");
+  }
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  roundRect(ctx, barX, barY, innerW, barOuterH, barR);
+  ctx.fill();
+
+  // Percentage label on bar
+  ctx.fillStyle = "rgba(255,255,255,0.92)";
+  ctx.font = `700 ${Math.max(10, Math.round(w * 0.012))}px Inter, sans-serif`;
+  const pctLabel = Math.round(progress * 100) + "%";
+  ctx.fillText(pctLabel, cx, barY + barOuterH / 2);
+
+  // Tag row (Hip/neck baseline preview
+  ctx.fillStyle = "rgba(255,255,255,0.4)";
+  ctx.font = `500 ${Math.max(10, Math.round(w * 0.012))}px Inter, sans-serif`;
+  ctx.fillText("3D world-landmark calibration • personal baseline", cx, barY + barOuterH + 20);
+
+  ctx.restore();
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  if (w < 2 * r) r = w / 2;
+  if (h < 2 * r) r = h / 2;
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, r, r, Math.PI + Math.PI / 2);
+  ctx.arcTo(x + w, y + h, r, Math.PI / 2, 0);
+  ctx.arcTo(x, y + h, r, 0, -Math.PI / 2);
+  ctx.arcTo(x, y, r, -Math.PI / 2, Math.PI);
+  ctx.closePath();
+}
+
 // ─── Detection Loop ───────────────────────────────────────
 function detectFrame() {
   if (!poseLandmarker || videoEl.readyState < 2) {
@@ -319,25 +444,41 @@ function detectFrame() {
 
   if (result.landmarks && result.landmarks.length > 0) {
     const landmarks = result.landmarks[0];
+    const worldLandmarks = result.worldLandmarks && result.worldLandmarks.length > 0
+      ? result.worldLandmarks[0]
+      : null;
 
     // Evaluate with engine
     const activeExercise = exerciseSelect.value;
-    const evaluation = engine.evaluateFrame(landmarks, activeExercise);
+    const evaluation = engine.evaluateFrame(landmarks, activeExercise, worldLandmarks);
 
     // Draw only joints used by the selected exercise. This makes the overlay
     // easier to read and avoids presenting unrelated limbs as active inputs.
+    const calState = evaluation.calibrationState;
+    const isInCalibration = calState && calState.state !== "calibrated" && (activeExercise === "push_up" || activeExercise === "plank");
+
     drawSkeleton(
       landmarks,
       GymMetricEngine.getDisplayLandmarks(activeExercise, evaluation.activeArm),
       evaluation.formGuideLines,
-      evaluation.formOk
+      isInCalibration ? true : evaluation.formOk
     );
 
+    drawCalibrationOverlay(calState, activeExercise);
+
     // Update rep count or hold time
-    if (evaluation.holdTime !== null) {
-      repCountEl.textContent = formatHoldTime(evaluation.holdTime);
+    if (!isInCalibration) {
+      if (evaluation.holdTime !== null) {
+        repCountEl.textContent = formatHoldTime(evaluation.holdTime);
+      } else {
+        repCountEl.textContent = evaluation.reps;
+      }
     } else {
-      repCountEl.textContent = evaluation.reps;
+      if (activeExercise === "plank") {
+        repCountEl.textContent = formatHoldTime(0);
+      } else {
+        repCountEl.textContent = evaluation.reps;
+      }
     }
 
     // Update phase indicator
@@ -346,7 +487,11 @@ function detectFrame() {
       const curlAngle = activeExercise === "bicep_curl" && Number.isFinite(evaluation.primaryAngle)
         ? ` · ${evaluation.primaryAngle}°`
         : "";
-      phaseIndicatorEl.textContent = phaseLabel + curlAngle;
+      if (isInCalibration) {
+        phaseIndicatorEl.textContent = "";
+      } else {
+        phaseIndicatorEl.textContent = phaseLabel + curlAngle;
+      }
     }
 
     // Update camera angle indicator
@@ -364,7 +509,19 @@ function detectFrame() {
     }
 
     // Update feedback with type-aware styling
-    if ((activeExercise === "push_up" || activeExercise === "plank") && evaluation.formIssues && evaluation.formIssues.length > 0) {
+    if (isInCalibration && calState) {
+      const msg = calState.rejectionReason || calState.prompt || "Calibrating…";
+      if (calState.rejectionReason) {
+        feedbackEl.textContent = msg;
+        feedbackEl.className = "value has-warning";
+      } else if (calState.state === "orientation_check") {
+        feedbackEl.textContent = msg;
+        feedbackEl.className = "value has-warning";
+      } else {
+        feedbackEl.textContent = msg;
+        feedbackEl.className = "value has-good";
+      }
+    } else if ((activeExercise === "push_up" || activeExercise === "plank") && evaluation.formIssues && evaluation.formIssues.length > 0) {
       const correctionMsg = evaluation.formIssues.length === 1
         ? evaluation.formIssues[0]
         : evaluation.formIssues.join(" + ");
@@ -383,6 +540,7 @@ function detectFrame() {
     }
   } else {
     ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+    drawCalibrationOverlay(null, "");
     feedbackEl.textContent = "No pose detected — step into frame";
     feedbackEl.className = "value";
   }
