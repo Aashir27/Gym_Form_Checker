@@ -137,6 +137,12 @@
       gap: 16px;
     }
 
+    .header-controls-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
     /* ─── Exercise Selector ──────────────────────────────── */
     .exercise-select-wrapper {
       position: relative;
@@ -185,6 +191,46 @@
     #exercise-select option {
       background: var(--bg-secondary);
       color: var(--text-primary);
+    }
+
+    .skeleton-toggle {
+      appearance: none;
+      background: linear-gradient(135deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.03));
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: var(--text-primary);
+      font-family: 'Inter', sans-serif;
+      font-size: 0.9rem;
+      font-weight: 600;
+      padding: 12px 16px;
+      border-radius: 24px;
+      cursor: pointer;
+      transition: var(--transition);
+      backdrop-filter: blur(24px) saturate(150%);
+      -webkit-backdrop-filter: blur(24px) saturate(150%);
+      box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.2), 0 4px 12px rgba(0, 0, 0, 0.2);
+      white-space: nowrap;
+    }
+
+    .skeleton-toggle:hover {
+      border-color: rgba(255, 255, 255, 0.3);
+      transform: translateY(-1px);
+      box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.2), 0 6px 16px rgba(0, 0, 0, 0.3);
+    }
+
+    .skeleton-toggle:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.2), 0 0 0 3px var(--accent-glow);
+    }
+
+    .skeleton-toggle.is-active {
+      border-color: var(--success);
+      box-shadow: 0 0 0 3px rgba(0, 230, 118, 0.14), 0 4px 12px rgba(0, 0, 0, 0.2);
+      color: var(--success);
+    }
+
+    .skeleton-view-row {
+      display: none;
     }
 
     /* ─── Main Content ───────────────────────────────────── */
@@ -341,6 +387,14 @@
       max-width: 840px;
       margin: 0 auto;
       width: 100%;
+    }
+
+    .stats-column {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      width: 100%;
+      min-width: 0;
     }
 
     .stat-card {
@@ -535,11 +589,6 @@
         gap: 10px;
       }
 
-      #exercise-select {
-        padding: 8px 32px 8px 12px;
-        font-size: 0.75rem;
-      }
-
       main {
         flex: none;
         min-height: auto;
@@ -576,6 +625,18 @@
         max-width: none;
         height: auto;
         gap: 12px;
+      }
+
+      .stats-column {
+        gap: 12px;
+      }
+
+      .skeleton-view-row {
+        display: flex;
+        justify-content: flex-start;
+        align-items: flex-start;
+        width: 100%;
+        max-width: none;
       }
 
       .stat-card {
@@ -628,13 +689,16 @@
       </div>
     </div>
     <div class="header-controls">
-      <div class="exercise-select-wrapper">
-        <select id="exercise-select">
-          <option value="squat">Squat</option>
-          <option value="bicep_curl">Bicep Curl</option>
-          <option value="push_up">Push-Up</option>
-          <option value="plank">Plank</option>
-        </select>
+      <div class="header-controls-group">
+        <div class="exercise-select-wrapper">
+          <select id="exercise-select">
+            <option value="squat">Squat</option>
+            <option value="bicep_curl">Bicep Curl</option>
+            <option value="push_up">Push-Up</option>
+            <option value="plank">Plank</option>
+          </select>
+        </div>
+        <button id="btn-skeleton-only" class="skeleton-toggle" title="Skeleton View" aria-pressed="false">Skeleton View</button>
       </div>
     </div>
   </header>
@@ -664,13 +728,16 @@
         <div class="label" id="rep-label">Reps</div>
         <div class="value" id="rep-count">0</div>
       </div>
-      <div class="stat-card feedback-card">
-        <div class="label">Form Feedback</div>
-        <div class="value has-good" id="form-feedback">Waiting for camera…</div>
-        <div class="indicators">
-          <div class="phase-indicator" id="phase-indicator"></div>
-          <div class="angle-indicator" id="angle-indicator"></div>
+      <div class="stats-column">
+        <div class="stat-card feedback-card">
+          <div class="label">Form Feedback</div>
+          <div class="value has-good" id="form-feedback">Waiting for camera…</div>
+          <div class="indicators">
+            <div class="phase-indicator" id="phase-indicator"></div>
+            <div class="angle-indicator" id="angle-indicator"></div>
+          </div>
         </div>
+        <div class="skeleton-view-row" id="skeleton-view-row"></div>
       </div>
     </div>
   </main>

@@ -22,6 +22,7 @@ let animationFrameId = null;
 let currentFacingMode = "user";
 let currentZoom = 1;
 let currentStream = null;
+let skeletonOnlyMode = false;
 
 const engine = new GymMetricEngine();
 const videoWrapper = document.getElementById("video-wrapper");
@@ -29,6 +30,10 @@ const btnFlipCam = document.getElementById("btn-flip-cam");
 const btnZoomIn = document.getElementById("btn-zoom-in");
 const btnZoomOut = document.getElementById("btn-zoom-out");
 const zoomControls = document.getElementById("zoom-controls");
+const btnSkeletonOnly = document.getElementById("btn-skeleton-only");
+const skeletonViewRow = document.getElementById("skeleton-view-row");
+const headerControlsGroup = document.querySelector(".header-controls-group");
+const landscapeLayoutQuery = window.matchMedia("(max-width: 900px) and (orientation: landscape)");
 
 function isMobileDevice() {
   return window.matchMedia("(pointer: coarse)").matches || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
@@ -148,6 +153,27 @@ function updateViewTransform() {
   }
 }
 
+function updateSkeletonOnlyMode() {
+  if (!videoEl) return;
+  videoEl.style.visibility = skeletonOnlyMode ? "hidden" : "visible";
+  if (btnSkeletonOnly) {
+    btnSkeletonOnly.classList.toggle("is-active", skeletonOnlyMode);
+    btnSkeletonOnly.setAttribute("aria-pressed", skeletonOnlyMode ? "true" : "false");
+  }
+}
+
+function updateSkeletonButtonPlacement() {
+  if (!btnSkeletonOnly || !headerControlsGroup || !skeletonViewRow) return;
+  const targetParent = landscapeLayoutQuery.matches ? skeletonViewRow : headerControlsGroup;
+  if (btnSkeletonOnly.parentElement !== targetParent) {
+    targetParent.appendChild(btnSkeletonOnly);
+  }
+}
+
+updateSkeletonButtonPlacement();
+landscapeLayoutQuery.addEventListener("change", updateSkeletonButtonPlacement);
+window.addEventListener("resize", updateSkeletonButtonPlacement);
+
 // ─── Start Webcam ─────────────────────────────────────────
 async function startCamera(facingMode = "user") {
   if (currentStream) {
@@ -182,6 +208,7 @@ async function startCamera(facingMode = "user") {
 
   return new Promise((resolve) => {
     videoEl.onloadeddata = () => {
+      updateSkeletonOnlyMode();
       resizeOverlay();
       resolve();
     };
@@ -209,6 +236,11 @@ btnZoomIn.addEventListener("click", () => {
 btnZoomOut.addEventListener("click", () => {
   currentZoom = Math.max(currentZoom - 0.2, 1.0);
   updateViewTransform();
+});
+
+btnSkeletonOnly.addEventListener("click", () => {
+  skeletonOnlyMode = !skeletonOnlyMode;
+  updateSkeletonOnlyMode();
 });
 
 // ─── Draw Skeleton ────────────────────────────────────────
@@ -465,6 +497,8 @@ function detectFrame() {
 // ─── Bootstrap ────────────────────────────────────────────
 async function main() {
   try {
+    updateSkeletonButtonPlacement();
+    updateSkeletonOnlyMode();
     await Promise.all([initPoseLandmarker(), startCamera()]);
     feedbackEl.textContent = "Ready, start your exercise!";
     feedbackEl.className = "value has-good";
