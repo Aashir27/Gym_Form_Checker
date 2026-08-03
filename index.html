@@ -497,6 +497,123 @@
         font-size: 2.2rem;
       }
     }
+
+    @media (max-width: 900px) and (orientation: landscape) {
+      body {
+        min-height: 100dvh;
+        overflow-x: hidden;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      header {
+        padding: 8px 14px 0;
+        max-width: none;
+        align-items: flex-start;
+        gap: 10px;
+      }
+
+      .logo {
+        gap: 10px;
+      }
+
+      .logo-icon {
+        width: 34px;
+        height: 34px;
+        font-size: 16px;
+      }
+
+      .logo h1 {
+        font-size: 1.05rem;
+      }
+
+      .logo span {
+        font-size: 0.62rem;
+      }
+
+      .header-controls {
+        gap: 10px;
+      }
+
+      #exercise-select {
+        padding: 8px 32px 8px 12px;
+        font-size: 0.75rem;
+      }
+
+      main {
+        flex: none;
+        min-height: auto;
+        max-width: none;
+        padding: 8px 12px 10px;
+        gap: 10px;
+        display: grid;
+        grid-template-columns: minmax(0, 1.7fr) minmax(220px, 0.9fr);
+        align-items: start;
+      }
+
+      .video-container {
+        max-width: none;
+        aspect-ratio: 4 / 3;
+        height: auto;
+        min-height: 0;
+      }
+
+      .camera-controls {
+        bottom: 10px;
+        right: 10px;
+        gap: 6px;
+      }
+
+      .glass-btn {
+        width: 34px;
+        height: 34px;
+        font-size: 0.9rem;
+      }
+
+      .stats-row {
+        grid-template-columns: 1fr;
+        align-content: start;
+        max-width: none;
+        height: auto;
+        gap: 12px;
+      }
+
+      .stat-card {
+        padding: 12px 14px;
+        border-radius: 18px;
+      }
+
+      .stat-card .label {
+        margin-bottom: 4px;
+      }
+
+      .stat-card .value {
+        font-size: 1.5rem;
+      }
+
+      .stat-card.feedback-card .value {
+        min-height: 1.8em;
+        font-size: 0.82rem;
+        line-height: 1.35;
+      }
+
+      .indicators {
+        margin-top: 6px;
+        gap: 6px;
+      }
+
+      .phase-indicator,
+      .angle-indicator {
+        padding: 4px 10px;
+        font-size: 0.58rem;
+        letter-spacing: 1.4px;
+      }
+
+      footer {
+        padding: 6px 12px 8px;
+        font-size: 0.62rem;
+      }
+    }
   </style>
 </head>
 
