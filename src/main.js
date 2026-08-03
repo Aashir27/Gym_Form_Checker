@@ -1,5 +1,5 @@
 import { PoseLandmarker, FilesetResolver } from "@mediapipe/tasks-vision";
-import { GymMetricEngine } from "./engine.js";
+import { GymMetricEngine, buildSquatCorrectionGuides } from "./engine.js";
 
 // ─── DOM Elements ──────────────────────────────────────────
 const videoEl = document.getElementById("webcam");
@@ -9,8 +9,9 @@ const repCountEl = document.getElementById("rep-count");
 const repLabelEl = document.getElementById("rep-label");
 const feedbackEl = document.getElementById("form-feedback");
 const exerciseSelect = document.getElementById("exercise-select");
-const colorPicker = document.getElementById("skeleton-color");
 const loadingOverlay = document.getElementById("loading-overlay");
+const SKELETON_COLOR = "#ffffff";
+const BAD_LANDMARK_COLOR = "#ff5252";
 const phaseIndicatorEl = document.getElementById("phase-indicator");
 const angleIndicatorEl = document.getElementById("angle-indicator");
 
@@ -35,12 +36,12 @@ const zoomControls = document.getElementById("zoom-controls");
  * object-fit: cover calculation as the video element.
  */
 function resizeOverlay() {
-  const bounds = canvasEl.getBoundingClientRect();
+  // Use layout size (pre-CSS-transform) so zoom/mirror don't desync the buffer.
   const pixelRatio = window.devicePixelRatio || 1;
-  const width = Math.round(bounds.width * pixelRatio);
-  const height = Math.round(bounds.height * pixelRatio);
+  const width = Math.round(videoWrapper.clientWidth * pixelRatio);
+  const height = Math.round(videoWrapper.clientHeight * pixelRatio);
 
-  if (canvasEl.width !== width || canvasEl.height !== height) {
+  if (width > 0 && height > 0 && (canvasEl.width !== width || canvasEl.height !== height)) {
     canvasEl.width = width;
     canvasEl.height = height;
   }
@@ -82,7 +83,7 @@ exerciseSelect.addEventListener("change", () => {
   engine.reset();
   repCountEl.textContent = "0";
   updateRepLabel();
-  feedbackEl.textContent = "Switched; get into position!";
+  feedbackEl.textContent = "Switched, get into position!";
   feedbackEl.className = "value has-good";
   if (phaseIndicatorEl) phaseIndicatorEl.textContent = "";
   if (angleIndicatorEl) {
@@ -191,17 +192,24 @@ btnZoomOut.addEventListener("click", () => {
 
 // ─── Draw Skeleton ────────────────────────────────────────
 function projectPoint(point, canvasWidth, canvasHeight) {
-  const videoScale = Math.max(
-    canvasWidth / videoEl.videoWidth,
-    canvasHeight / videoEl.videoHeight
-  );
-  const renderedVideoWidth = videoEl.videoWidth * videoScale;
-  const renderedVideoHeight = videoEl.videoHeight * videoScale;
-  const offsetX = (canvasWidth - renderedVideoWidth) / 2;
-  const offsetY = (canvasHeight - renderedVideoHeight) / 2;
+  // Match object-fit: cover using the video's layout box, then scale into the
+  // canvas backing store. Avoids skeleton drift when the wrapper is mirrored/zoomed.
+  const layoutW = videoEl.clientWidth || canvasWidth;
+  const layoutH = videoEl.clientHeight || canvasHeight;
+  const vw = videoEl.videoWidth;
+  const vh = videoEl.videoHeight;
+  if (!vw || !vh || !layoutW || !layoutH) return { x: 0, y: 0 };
+
+  const videoScale = Math.max(layoutW / vw, layoutH / vh);
+  const renderedVideoWidth = vw * videoScale;
+  const renderedVideoHeight = vh * videoScale;
+  const offsetX = (layoutW - renderedVideoWidth) / 2;
+  const offsetY = (layoutH - renderedVideoHeight) / 2;
+  const sx = canvasWidth / layoutW;
+  const sy = canvasHeight / layoutH;
   return {
-    x: offsetX + point.x * renderedVideoWidth,
-    y: offsetY + point.y * renderedVideoHeight,
+    x: (offsetX + point.x * renderedVideoWidth) * sx,
+    y: (offsetY + point.y * renderedVideoHeight) * sy,
   };
 }
 
@@ -211,40 +219,50 @@ function drawGuideLines(guideLines) {
   ctx.save();
   ctx.strokeStyle = "#00e676";
   ctx.fillStyle = "#00e676";
-  ctx.shadowColor = "rgba(0, 230, 118, 0.45)";
-  ctx.shadowBlur = 14;
-  ctx.lineWidth = 4;
+  ctx.shadowColor = "rgba(0, 230, 118, 0.55)";
+  ctx.shadowBlur = 16;
+  ctx.lineWidth = 5;
   ctx.lineCap = "round";
+  ctx.lineJoin = "round";
 
   for (const guide of guideLines) {
     if (!guide?.from || !guide?.to) continue;
+    if (!Number.isFinite(guide.from.x) || !Number.isFinite(guide.from.y)) continue;
+    if (!Number.isFinite(guide.to.x) || !Number.isFinite(guide.to.y)) continue;
     const from = projectPoint(guide.from, canvasEl.width, canvasEl.height);
     const to = projectPoint(guide.to, canvasEl.width, canvasEl.height);
+    if (!Number.isFinite(from.x) || !Number.isFinite(to.x)) continue;
     ctx.beginPath();
     ctx.moveTo(from.x, from.y);
     ctx.lineTo(to.x, to.y);
     ctx.stroke();
 
     ctx.beginPath();
-    ctx.arc(to.x, to.y, 4, 0, 2 * Math.PI);
+    ctx.arc(to.x, to.y, 5, 0, 2 * Math.PI);
     ctx.fill();
   }
 
   ctx.restore();
 }
 
-function drawSkeleton(landmarks, displayedLandmarks, guideLines = [], formOk = true) {
+function drawSkeleton(landmarks, displayedLandmarks, guideLines = [], formOk = true, badLandmarks = []) {
   ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
 
   if (!landmarks || landmarks.length === 0 || !videoEl.videoWidth || !videoEl.videoHeight) return;
 
   const visible = new Set(displayedLandmarks);
+  const badSet = new Set(badLandmarks || []);
   const project = (point) => projectPoint(point, canvasEl.width, canvasEl.height);
-  const baseColor = colorPicker.value;
-  const connectionColor = formOk ? baseColor : "#ff5252";
+
+  const colorFor = (indices) => {
+    // Selective red for specific bad joints (e.g. curl arm); otherwise whole-body red on form fail.
+    if (badSet.size > 0) {
+      return indices.some((idx) => badSet.has(idx)) ? BAD_LANDMARK_COLOR : SKELETON_COLOR;
+    }
+    return formOk ? SKELETON_COLOR : BAD_LANDMARK_COLOR;
+  };
 
   // Draw connections
-  ctx.strokeStyle = connectionColor + "b3";
   ctx.lineWidth = 3;
   ctx.lineCap = "round";
 
@@ -253,8 +271,10 @@ function drawSkeleton(landmarks, displayedLandmarks, guideLines = [], formOk = t
     const a = landmarks[i];
     const b = landmarks[j];
     if (a.visibility < 0.5 || b.visibility < 0.5) continue;
+    const color = colorFor([i, j]);
     const start = project(a);
     const end = project(b);
+    ctx.strokeStyle = color + "b3";
     ctx.beginPath();
     ctx.moveTo(start.x, start.y);
     ctx.lineTo(end.x, end.y);
@@ -267,21 +287,22 @@ function drawSkeleton(landmarks, displayedLandmarks, guideLines = [], formOk = t
     const lm = landmarks[i];
     if (lm.visibility < 0.5) continue;
     const { x, y } = project(lm);
+    const color = colorFor([i]);
 
     // Outer glow
     ctx.beginPath();
     ctx.arc(x, y, 6, 0, 2 * Math.PI);
-    ctx.fillStyle = connectionColor + "4d";
+    ctx.fillStyle = color + "4d";
     ctx.fill();
 
     // Inner dot
     ctx.beginPath();
     ctx.arc(x, y, 3.5, 0, 2 * Math.PI);
-    ctx.fillStyle = connectionColor;
+    ctx.fillStyle = color;
     ctx.fill();
   }
 
-  if (!formOk) {
+  if (guideLines && guideLines.length > 0) {
     drawGuideLines(guideLines);
   }
 }
@@ -291,131 +312,6 @@ function formatHoldTime(seconds) {
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60);
   return `${mins}:${secs.toString().padStart(2, "0")}`;
-}
-
-/**
- * Draw calibration overlay UI on the canvas.
- * - During push_up / plank exercises, shows:
- *   - Orientation-warning prompt ("Please turn side-on…")
- *   - 3-second progress bar + "Get into your best … position and hold still"
- *   - Rejection banner + restart hint
- */
-function drawCalibrationOverlay(calState, activeExercise) {
-  if (!calState || calState.state === "calibrated" || (activeExercise !== "push_up" && activeExercise !== "plank")) {
-    return;
-  }
-
-  const w = canvasEl.width;
-  const h = canvasEl.height;
-  if (!w || !h) return;
-
-  const cx = w / 2;
-  const barOuterW = Math.min(w * 0.55, 480);
-  const barOuterH = 22;
-  const barY = h / 2 - 20;
-
-  ctx.save();
-
-  // Backdrop (subtle dark box behind text
-  ctx.fillStyle = "rgba(10, 10, 20, 0.55)";
-  const padX = 28;
-  const padY = 22;
-  const boxH = 150;
-  const boxW = Math.max(barOuterW + padX * 2, 460);
-  const boxX = cx - boxW / 2;
-  const boxY = barY - 60;
-  ctx.beginPath();
-  roundRect(ctx, boxX, boxY, boxW, boxH, 18);
-  ctx.fill();
-  ctx.strokeStyle = "rgba(255,255,255,0.08)";
-  ctx.lineWidth = 1;
-  ctx.stroke();
-
-  // Title
-  const msg = calState.rejectionReason || calState.prompt || "Calibrating…";
-  const isRejection = !!calState.rejectionReason;
-  const isOrient = calState.state === "orientation_check";
-  ctx.font = `600 ${Math.max(14, Math.round(w * 0.02))}px Inter, -apple-system, sans-serif`;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  if (isRejection) {
-    ctx.fillStyle = "#ffab40";
-    ctx.shadowColor = "rgba(255,171,64,0.35)";
-    ctx.shadowBlur = 16;
-  } else if (isOrient) {
-    ctx.fillStyle = "#ffab40";
-    ctx.shadowColor = "rgba(255,171,64,0.3)";
-    ctx.shadowBlur = 12;
-  } else {
-    ctx.fillStyle = "#ffffff";
-    ctx.shadowColor = "rgba(108,92,231,0.3)";
-    ctx.shadowBlur = 10;
-  }
-  ctx.fillText(msg, cx, barY - 28);
-
-  // Subtitle
-  ctx.shadowBlur = 0;
-  ctx.font = `500 ${Math.max(11, Math.round(w * 0.014))}px Inter, -apple-system, sans-serif`;
-  if (isRejection) {
-    ctx.fillStyle = "rgba(255,255,255,0.75)";
-    ctx.fillText("Window will restart automatically", cx, barY - 2);
-  } else if (isOrient) {
-    ctx.fillStyle = "rgba(255,255,255,0.7)";
-    ctx.fillText("Side profile view needed for accurate 3D form tracking", cx, barY - 2);
-  } else {
-    ctx.fillStyle = "rgba(255,255,255,0.7)";
-    ctx.fillText("Session will begin automatically", cx, barY - 2);
-  }
-
-  // Progress bar background
-  const barX = cx - barOuterW / 2;
-  const barR = barOuterH / 2;
-  ctx.shadowBlur = 0;
-  ctx.fillStyle = "rgba(255,255,255,0.1)";
-  ctx.beginPath();
-  roundRect(ctx, barX, barY, barOuterW, barOuterH, barR);
-  ctx.fill();
-
-  // Progress fill
-  const progress = typeof calState.progressPct === "number" ? calState.progressPct : 0;
-  const innerW = Math.max(0, Math.min(1, progress) * barOuterW);
-  const grad = ctx.createLinearGradient(barX, 0, barX + barOuterW, 0);
-  if (isRejection || isOrient) {
-    grad.addColorStop(0, "#ffab40");
-    grad.addColorStop(1, "#ff5252");
-  } else {
-    grad.addColorStop(0, "#6c5ce7");
-    grad.addColorStop(0.5, "#00e676");
-    grad.addColorStop(1, "#69f0ae");
-  }
-  ctx.fillStyle = grad;
-  ctx.beginPath();
-  roundRect(ctx, barX, barY, innerW, barOuterH, barR);
-  ctx.fill();
-
-  // Percentage label on bar
-  ctx.fillStyle = "rgba(255,255,255,0.92)";
-  ctx.font = `700 ${Math.max(10, Math.round(w * 0.012))}px Inter, sans-serif`;
-  const pctLabel = Math.round(progress * 100) + "%";
-  ctx.fillText(pctLabel, cx, barY + barOuterH / 2);
-
-  // Tag row (Hip/neck baseline preview
-  ctx.fillStyle = "rgba(255,255,255,0.4)";
-  ctx.font = `500 ${Math.max(10, Math.round(w * 0.012))}px Inter, sans-serif`;
-  ctx.fillText("3D world-landmark calibration • personal baseline", cx, barY + barOuterH + 20);
-
-  ctx.restore();
-}
-
-function roundRect(ctx, x, y, w, h, r) {
-  if (w < 2 * r) r = w / 2;
-  if (h < 2 * r) r = h / 2;
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, r, r, Math.PI + Math.PI / 2);
-  ctx.arcTo(x + w, y + h, r, Math.PI / 2, 0);
-  ctx.arcTo(x, y + h, r, 0, -Math.PI / 2);
-  ctx.arcTo(x, y, r, -Math.PI / 2, Math.PI);
-  ctx.closePath();
 }
 
 // ─── Detection Loop ───────────────────────────────────────
@@ -448,37 +344,56 @@ function detectFrame() {
       ? result.worldLandmarks[0]
       : null;
 
-    // Evaluate with engine
+    // Evaluate with engine — never let a form-check error kill the skeleton loop.
     const activeExercise = exerciseSelect.value;
-    const evaluation = engine.evaluateFrame(landmarks, activeExercise, worldLandmarks);
+    let evaluation;
+    try {
+      evaluation = engine.evaluateFrame(landmarks, activeExercise, worldLandmarks);
+    } catch (error) {
+      console.warn("Form evaluation skipped frame due to error:", error);
+      evaluation = {
+        reps: engine.repCount,
+        feedback: "Tracking hiccup, keep going",
+        feedbackType: "info",
+        holdTime: null,
+        phase: "",
+        cameraAngle: null,
+        angleOk: true,
+        activeArm: engine._activeArm,
+        primaryAngle: null,
+        formOk: true,
+        formIssues: [],
+        formGuideLines: [],
+        badLandmarks: [],
+        calibrationState: null,
+      };
+    }
 
     // Draw only joints used by the selected exercise. This makes the overlay
     // easier to read and avoids presenting unrelated limbs as active inputs.
-    const calState = evaluation.calibrationState;
-    const isInCalibration = calState && calState.state !== "calibrated" && (activeExercise === "push_up" || activeExercise === "plank");
+
+    // Squat: always rebuild green legs here from the drawn landmarks so they
+    // cannot be dropped by the engine path. Same skeleton joints, slid apart.
+    let guideLines = evaluation.formGuideLines || [];
+    const badLandmarks = evaluation.badLandmarks || [];
+    if (activeExercise === "squat" && badLandmarks.length > 0) {
+      const squatGuides = buildSquatCorrectionGuides(landmarks);
+      if (squatGuides.length > 0) guideLines = squatGuides;
+    }
 
     drawSkeleton(
       landmarks,
       GymMetricEngine.getDisplayLandmarks(activeExercise, evaluation.activeArm),
-      evaluation.formGuideLines,
-      isInCalibration ? true : evaluation.formOk
+      guideLines,
+      evaluation.formOk,
+      badLandmarks
     );
 
-    drawCalibrationOverlay(calState, activeExercise);
-
     // Update rep count or hold time
-    if (!isInCalibration) {
-      if (evaluation.holdTime !== null) {
-        repCountEl.textContent = formatHoldTime(evaluation.holdTime);
-      } else {
-        repCountEl.textContent = evaluation.reps;
-      }
+    if (evaluation.holdTime !== null) {
+      repCountEl.textContent = formatHoldTime(evaluation.holdTime);
     } else {
-      if (activeExercise === "plank") {
-        repCountEl.textContent = formatHoldTime(0);
-      } else {
-        repCountEl.textContent = evaluation.reps;
-      }
+      repCountEl.textContent = evaluation.reps;
     }
 
     // Update phase indicator
@@ -487,11 +402,7 @@ function detectFrame() {
       const curlAngle = activeExercise === "bicep_curl" && Number.isFinite(evaluation.primaryAngle)
         ? ` · ${evaluation.primaryAngle}°`
         : "";
-      if (isInCalibration) {
-        phaseIndicatorEl.textContent = "";
-      } else {
-        phaseIndicatorEl.textContent = phaseLabel + curlAngle;
-      }
+      phaseIndicatorEl.textContent = phaseLabel + curlAngle;
     }
 
     // Update camera angle indicator
@@ -508,26 +419,9 @@ function detectFrame() {
       angleIndicatorEl.className = "angle-indicator";
     }
 
-    // Update feedback with type-aware styling
-    if (isInCalibration && calState) {
-      const msg = calState.rejectionReason || calState.prompt || "Calibrating…";
-      if (calState.rejectionReason) {
-        feedbackEl.textContent = msg;
-        feedbackEl.className = "value has-warning";
-      } else if (calState.state === "orientation_check") {
-        feedbackEl.textContent = msg;
-        feedbackEl.className = "value has-warning";
-      } else {
-        feedbackEl.textContent = msg;
-        feedbackEl.className = "value has-good";
-      }
-    } else if ((activeExercise === "push_up" || activeExercise === "plank") && evaluation.formIssues && evaluation.formIssues.length > 0) {
-      const correctionMsg = evaluation.formIssues.length === 1
-        ? evaluation.formIssues[0]
-        : evaluation.formIssues.join(" + ");
-      feedbackEl.textContent = `Fix form: ${correctionMsg}`;
-      feedbackEl.className = "value has-warning";
-    } else if (evaluation.feedback && evaluation.feedback.length > 0) {
+    // Update feedback with type-aware styling.
+    // Push-up / plank: trust the engine sticky coach (no formIssues override flicker).
+    if (evaluation.feedback && evaluation.feedback.length > 0) {
       feedbackEl.textContent = evaluation.feedback;
       if (evaluation.feedbackType === "warning") {
         feedbackEl.className = "value has-warning";
@@ -535,13 +429,12 @@ function detectFrame() {
         feedbackEl.className = "value has-good";
       }
     } else {
-      feedbackEl.textContent = "Good form; keep going! 💪";
+      feedbackEl.textContent = "Good form, keep going! 💪";
       feedbackEl.className = "value has-good";
     }
   } else {
     ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
-    drawCalibrationOverlay(null, "");
-    feedbackEl.textContent = "No pose detected; step into frame";
+    feedbackEl.textContent = "No pose detected, step into frame";
     feedbackEl.className = "value";
   }
 
@@ -552,7 +445,7 @@ function detectFrame() {
 async function main() {
   try {
     await Promise.all([initPoseLandmarker(), startCamera()]);
-    feedbackEl.textContent = "Ready; start your exercise!";
+    feedbackEl.textContent = "Ready, start your exercise!";
     feedbackEl.className = "value has-good";
     detectFrame();
   } catch (err) {

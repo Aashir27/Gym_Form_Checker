@@ -131,6 +131,29 @@ function projectPointOnSegment(p, a, b) {
   return { x: a.x + abx * t, y: a.y + aby * t };
 }
 
+/** Project point p onto the infinite line through a and b (no endpoint clamp). */
+function projectPointOnLine(p, a, b) {
+  const abx = b.x - a.x;
+  const aby = b.y - a.y;
+  const apx = p.x - a.x;
+  const apy = p.y - a.y;
+  const abLenSq = abx * abx + aby * aby;
+  const t = abLenSq > 0 ? (apx * abx + apy * aby) / abLenSq : 0;
+  return { x: a.x + abx * t, y: a.y + aby * t, visibility: p.visibility ?? 1 };
+}
+
+/**
+ * Signed hip offset from the shoulder→ankle body line, in % of image height.
+ * Positive = hip below the line (toward floor / sag). Negative = hip above (pike).
+ * Uses projected-line Y so a diagonal side-view plank is scored correctly
+ * (unlike a simple average of shoulder/ankle Y).
+ */
+function hipOffsetFromBodyLine(shoulder, hip, ankle) {
+  if (!shoulder || !hip || !ankle) return 0;
+  const proj = projectPointOnLine(hip, shoulder, ankle);
+  return (hip.y - proj.y) * 100;
+}
+
 /** Visibility check. */
 function vis(pt, threshold = 0.4) {
   return pt && pt.visibility >= threshold;
@@ -194,8 +217,9 @@ function selectVisibleSide(points, previousSide = null) {
   const rightScore = scoreSide("right");
 
   if (leftScore === 0 && rightScore === 0) return null;
-  if (previousSide === "left" && leftScore >= rightScore - 0.12) return "left";
-  if (previousSide === "right" && rightScore >= leftScore - 0.12) return "right";
+  // Stronger stickiness — left/right profile was flipping and breaking plank/push-up.
+  if (previousSide === "left" && leftScore >= rightScore - 0.35) return "left";
+  if (previousSide === "right" && rightScore >= leftScore - 0.35) return "right";
   return leftScore >= rightScore ? "left" : "right";
 }
 
@@ -220,36 +244,54 @@ function makeGuidePoint(anchor, reference, direction, lengthFactor = 1) {
   return addPoint(anchor, scalePoint(direction, distance));
 }
 
-function buildStraightnessGuides(sidePoints, includeArm = false) {
+/** Ideal arm path for a curl: same shape, but elbow pulled onto the body line. */
+function buildCurlInlineGuides(shoulder, elbow, wrist, hip) {
+  if (!shoulder || !elbow || !wrist || !hip) return [];
+  const torsoDir = normalizePoint(subtractPoint(hip, shoulder));
+  if (lengthPoint(torsoDir) < 1e-6) return [];
+
+  const upperLen = dist(shoulder, elbow);
+  const idealElbow = addPoint(shoulder, scalePoint(torsoDir, upperLen));
+  const forearmLen = dist(elbow, wrist);
+  const forearmDir = normalizePoint(subtractPoint(wrist, elbow));
+  const idealWrist = lengthPoint(forearmDir) > 1e-6
+    ? addPoint(idealElbow, scalePoint(forearmDir, forearmLen))
+    : addPoint(idealElbow, scalePoint(torsoDir, forearmLen));
+
+  return [
+    { from: shoulder, to: idealElbow, type: "arm" },
+    { from: idealElbow, to: idealWrist, type: "arm" },
+  ];
+}
+
+/**
+ * Green correction guides for push-up / plank side view.
+ * Hip: straight shoulder → idealHip → ankle (hips on the body line).
+ * Neck: ideal ear on the hip→shoulder extension (neutral head).
+ */
+function buildStraightnessGuides(sidePoints, { hipBad = false, neckBad = false } = {}) {
   if (!sidePoints || !sidePoints.shoulder || !sidePoints.hip) return [];
 
   const guides = [];
-  const torsoDirection = normalizePoint(subtractPoint(sidePoints.shoulder, sidePoints.hip));
-  if (lengthPoint(torsoDirection) < 1e-6) return guides;
+  const { shoulder, hip, ankle, head } = sidePoints;
 
-  if (sidePoints.knee) {
-    const shoulderGuide = makeGuidePoint(sidePoints.hip, sidePoints.shoulder, torsoDirection, 1);
-    const kneeGuide = makeGuidePoint(sidePoints.hip, sidePoints.knee, scalePoint(torsoDirection, -1), 1);
-    guides.push({ from: shoulderGuide, to: sidePoints.hip, type: "hip" });
-    guides.push({ from: sidePoints.hip, to: kneeGuide, type: "hip" });
+  if (hipBad && ankle) {
+    // Ideal hip sits on the shoulder→ankle line (same depth as real hip along that line).
+    const idealHip = projectPointOnLine(hip, shoulder, ankle);
+    idealHip.visibility = hip.visibility ?? 1;
+    guides.push({ from: shoulder, to: idealHip, type: "hip" });
+    guides.push({ from: idealHip, to: ankle, type: "hip" });
+  }
 
-    if (sidePoints.ankle) {
-      const hipToKnee = normalizePoint(subtractPoint(sidePoints.knee, sidePoints.hip));
-      const ankleGuide = makeGuidePoint(sidePoints.knee, sidePoints.ankle, scalePoint(hipToKnee, -1), 1);
-      guides.push({ from: kneeGuide, to: ankleGuide, type: "hip" });
+  if (neckBad && head) {
+    // Ideal ear continues the hip→shoulder line past the shoulder (neutral neck).
+    const up = normalizePoint(subtractPoint(shoulder, hip));
+    if (lengthPoint(up) > 1e-6) {
+      const earLen = Math.max(dist(shoulder, head), 0.04);
+      const idealEar = addPoint(shoulder, scalePoint(up, earLen));
+      guides.push({ from: idealEar, to: shoulder, type: "neck" });
+      guides.push({ from: shoulder, to: hip, type: "neck" });
     }
-  }
-
-  if (sidePoints.head) {
-    const earGuide = makeGuidePoint(sidePoints.shoulder, sidePoints.head, scalePoint(torsoDirection, -1), 1);
-    guides.push({ from: earGuide, to: sidePoints.shoulder, type: "neck" });
-  }
-
-  if (includeArm && sidePoints.elbow && sidePoints.wrist) {
-    const elbowGuide = makeGuidePoint(sidePoints.shoulder, sidePoints.elbow, torsoDirection, 0.85);
-    const wristGuide = makeGuidePoint(sidePoints.elbow, sidePoints.wrist, torsoDirection, 0.85);
-    guides.push({ from: sidePoints.shoulder, to: elbowGuide, type: "arm" });
-    guides.push({ from: elbowGuide, to: wristGuide, type: "arm" });
   }
 
   return guides;
@@ -283,6 +325,31 @@ function debounceFormState(state, rawCorrect, goodFrames = 3, badFrames = 2) {
   return !!state.isCorrect;
 }
 
+/** Sticky boolean flag — hard to turn on, easy/slow to clear (or vice versa). */
+function debounceFlag(state, key, rawValue, enterFrames = 8, exitFrames = 10) {
+  const enterKey = `${key}Enter`;
+  const exitKey = `${key}Exit`;
+  const valueKey = `${key}Value`;
+
+  if (state[valueKey] === undefined) {
+    state[valueKey] = !!rawValue;
+    state[enterKey] = rawValue ? enterFrames : 0;
+    state[exitKey] = rawValue ? 0 : exitFrames;
+    return state[valueKey];
+  }
+
+  if (rawValue) {
+    state[enterKey] = (state[enterKey] || 0) + 1;
+    state[exitKey] = 0;
+    if (state[enterKey] >= enterFrames) state[valueKey] = true;
+  } else {
+    state[exitKey] = (state[exitKey] || 0) + 1;
+    state[enterKey] = 0;
+    if (state[exitKey] >= exitFrames) state[valueKey] = false;
+  }
+  return !!state[valueKey];
+}
+
 function getSmoothedMetric(state, key, value, windowSize = 6) {
   if (!state[key]) state[key] = [];
   state[key].push(value);
@@ -292,105 +359,149 @@ function getSmoothedMetric(state, key, value, windowSize = 6) {
 
 function analyzeSideViewForm(landmarks, state = {}, options = {}) {
   const {
-    includeArm = false,
-    hipTolerance = 12,
-    neckTolerance = 12,
+    hipTolerance = 14,
+    neckTolerance = 14,
     worldLandmarks = null,
-    baselineHipAngle = null,
-    baselineNeckAngle = null,
-    useBaselineRelative = false,
+    // "knee" = push-up style; "ankle" = full body line (better for plank side view)
+    hipEndpoint = "knee",
+    goodFrames = 3,
+    badFrames = 2,
+    smoothWindow = 6,
+    // Plank: neck must also fail an image-space check before we paint / guide it.
+    lenientNeck = false,
+    // Prefer perpendicular offset from shoulder–ankle line (side-view accurate).
+    useLineOffset = false,
+    offsetTolerance = 5,
+    enterIssueFrames = 3,
+    exitIssueFrames = 2,
   } = options;
 
   const side = selectVisibleSide(landmarks, state.visibleSide);
+  // When we cannot measure form yet, stay "correct" with no red paint — otherwise
+  // an empty badLandmarks list turns the ENTIRE skeleton red and looks frozen.
+  const unscored = (extra = {}) => ({
+    isCorrect: true,
+    hipAngle: null,
+    neckAngle: null,
+    issues: [],
+    visibleSide: side,
+    guideLines: [],
+    badLandmarks: [],
+    rawIsCorrect: true,
+    ...extra,
+  });
 
   if (!side) {
-    return {
-      isCorrect: false,
-      hipAngle: null,
-      neckAngle: null,
-      issues: ["Need a clearer side view"],
-      visibleSide: null,
-      guideLines: [],
-      rawIsCorrect: false,
-    };
+    return unscored({ issues: ["Need a clearer side view"], visibleSide: null });
   }
 
   const points = pickSidePoints(landmarks, side);
-  const missing = !points.shoulder || !points.hip || !points.knee || !points.ankle || !points.head;
+  const endPt = hipEndpoint === "ankle" ? points.ankle : points.knee;
+  const missing = !points.shoulder || !points.hip || !endPt || !points.ankle || !points.head;
   if (missing) {
-    return {
-      isCorrect: false,
-      hipAngle: null,
-      neckAngle: null,
-      issues: ["Need clearer visibility of shoulder, hip, knee, ankle, and head landmarks"],
-      visibleSide: side,
-      guideLines: [],
-      rawIsCorrect: false,
-    };
+    return unscored({
+      issues: ["Need clearer visibility of shoulder, hip, ankle, and head landmarks"],
+    });
   }
 
+  // Prefer 3D world landmarks for the body-line / neck angles.
+  const isLeft = side === "left";
   let hipAngleRaw;
   let neckAngleRaw;
+  let usedWorld = false;
   if (worldLandmarks && worldLandmarks.length >= 33) {
-    const isLeft = side === "left";
     const wShoulder = getLandmark(worldLandmarks, isLeft ? LM.L_SHOULDER : LM.R_SHOULDER);
     const wHip = getLandmark(worldLandmarks, isLeft ? LM.L_HIP : LM.R_HIP);
-    const wKnee = getLandmark(worldLandmarks, isLeft ? LM.L_KNEE : LM.R_KNEE);
-    const wHead = getLandmark(worldLandmarks, isLeft ? LM.L_EAR : LM.R_EAR) || getLandmark(worldLandmarks, LM.NOSE);
-    if (wShoulder && wHip && wKnee && wHead) {
-      hipAngleRaw = calculateAngle3D(wShoulder, wHip, wKnee);
+    const wEnd = hipEndpoint === "ankle"
+      ? getLandmark(worldLandmarks, isLeft ? LM.L_ANKLE : LM.R_ANKLE)
+      : getLandmark(worldLandmarks, isLeft ? LM.L_KNEE : LM.R_KNEE);
+    const wHead = getLandmark(worldLandmarks, isLeft ? LM.L_EAR : LM.R_EAR)
+      || getLandmark(worldLandmarks, LM.NOSE);
+    if (wShoulder && wHip && wEnd && wHead) {
+      hipAngleRaw = calculateAngle3D(wShoulder, wHip, wEnd);
       neckAngleRaw = calculateAngle3D(wHead, wShoulder, wHip);
-    } else {
-      hipAngleRaw = calculateAngle(points.shoulder, points.hip, points.knee);
-      neckAngleRaw = calculateAngle(points.head, points.shoulder, points.hip);
+      usedWorld = true;
     }
-  } else {
-    hipAngleRaw = calculateAngle(points.shoulder, points.hip, points.knee);
+  }
+  if (!usedWorld) {
+    hipAngleRaw = calculateAngle(points.shoulder, points.hip, endPt);
     neckAngleRaw = calculateAngle(points.head, points.shoulder, points.hip);
   }
 
-  const hipAngle = getSmoothedMetric(state, "hipAngles", hipAngleRaw, 6);
-  const neckAngle = getSmoothedMetric(state, "neckAngles", neckAngleRaw, 6);
+  const hipAngle = getSmoothedMetric(state, "hipAngles", hipAngleRaw, smoothWindow);
+  const neckAngle = getSmoothedMetric(state, "neckAngles", neckAngleRaw, smoothWindow);
 
-  let hipDeviation;
-  let neckDeviation;
-  if (useBaselineRelative && baselineHipAngle !== null && baselineNeckAngle !== null) {
-    hipDeviation = Math.abs(hipAngle - baselineHipAngle);
-    neckDeviation = Math.abs(neckAngle - baselineNeckAngle);
-  } else {
-    hipDeviation = Math.abs(hipAngle - 180);
-    neckDeviation = Math.abs(neckAngle - 180);
+  // Angle deviation from straight (180°) + signed offset from shoulder–ankle line.
+  const angleDeviation = Math.abs(hipAngle - 180);
+  const neckDeviation = Math.abs(neckAngle - 180);
+  const hipLineOffsetRaw = hipOffsetFromBodyLine(points.shoulder, points.hip, points.ankle);
+  const hipLineOffset = getSmoothedMetric(state, "hipOffsets", hipLineOffsetRaw, smoothWindow);
+
+  // Line-offset mode (plank): hips must sit near the shoulder–ankle line.
+  // Angle-only mode (push-up): keep previous interior-angle check.
+  const hipBadRaw = useLineOffset
+    ? Math.abs(hipLineOffset) > offsetTolerance || angleDeviation > hipTolerance
+    : angleDeviation > hipTolerance;
+
+  // Side-view neck: angle alone is noisy (head sits slightly off the torso line).
+  // Lenient mode also requires a clear image-space droop / crane.
+  let neckBadRaw = neckDeviation > neckTolerance;
+  if (lenientNeck) {
+    const headDrop = points.head.y - points.shoulder.y;
+    const clearlyOff = headDrop > 0.045 || headDrop < -0.06;
+    neckBadRaw = neckBadRaw && clearlyOff;
   }
 
-  const hipLineOffset = (points.hip.y - ((points.shoulder.y + points.knee.y) / 2)) * 100;
+  // Sticky per-issue flags so green guides / red paint don't flicker every frame.
+  const hipBad = debounceFlag(state, "hipBad", hipBadRaw, enterIssueFrames, exitIssueFrames);
+  const neckBad = debounceFlag(state, "neckBad", neckBadRaw, enterIssueFrames, exitIssueFrames);
 
   const issues = [];
-  const hipBad = hipDeviation > hipTolerance;
-  const neckBad = neckDeviation > neckTolerance;
-
   if (hipBad) {
-    if (hipLineOffset > 0.6) {
-      issues.push("hips too low");
-    } else if (hipLineOffset < -0.6) {
-      issues.push("hips too high");
-    } else {
-      issues.push("hip line not straight");
+    if (hipLineOffset > 1.5) issues.push("hips sagging");
+    else if (hipLineOffset < -1.5) issues.push("hips piking");
+    else issues.push("hips not in a straight line");
+  }
+  if (neckBad) {
+    if (points.head.y > points.shoulder.y + 0.03) issues.push("head dropping");
+    else if (points.head.y < points.shoulder.y - 0.04) issues.push("head craning up");
+    else issues.push("neck not neutral");
+  }
+
+  const rawIsCorrect = !hipBadRaw && !neckBadRaw;
+  const isCorrect = debounceFormState(state, !hipBad && !neckBad, goodFrames, badFrames);
+
+  // Only draw guides for sticky (debounced) faults — stops "random" green flashes.
+  const guideLines = (hipBad || neckBad)
+    ? buildStraightnessGuides(points, { hipBad, neckBad })
+    : [];
+
+  const earIdx = isLeft ? LM.L_EAR : LM.R_EAR;
+  const badLandmarks = [];
+  if (hipBad) {
+    badLandmarks.push(
+      isLeft ? LM.L_SHOULDER : LM.R_SHOULDER,
+      isLeft ? LM.L_HIP : LM.R_HIP,
+      isLeft ? LM.L_ANKLE : LM.R_ANKLE
+    );
+    if (hipEndpoint === "knee") {
+      badLandmarks.push(isLeft ? LM.L_KNEE : LM.R_KNEE);
     }
   }
-
   if (neckBad) {
-    issues.push("neck not aligned");
+    badLandmarks.push(
+      earIdx,
+      isLeft ? LM.L_SHOULDER : LM.R_SHOULDER,
+      isLeft ? LM.L_HIP : LM.R_HIP
+    );
   }
-
-  const rawIsCorrect = !hipBad && !neckBad;
-  const isCorrect = debounceFormState(state, rawIsCorrect, 3, 2);
-  const guideLines = rawIsCorrect ? [] : buildStraightnessGuides(points, includeArm);
 
   state.visibleSide = side;
   state.lastHipAngle = hipAngle;
   state.lastNeckAngle = neckAngle;
   state.lastIssues = issues;
   state.lastGuideLines = guideLines;
+  state.lastBadLandmarks = badLandmarks;
 
   return {
     isCorrect,
@@ -399,20 +510,52 @@ function analyzeSideViewForm(landmarks, state = {}, options = {}) {
     issues,
     visibleSide: side,
     guideLines,
+    badLandmarks: [...new Set(badLandmarks)],
     rawIsCorrect,
-    bodyDeviation: hipDeviation,
+    bodyDeviation: angleDeviation,
     neckDeviation,
     hipLineOffset,
+    usedWorld,
     points,
   };
 }
 
 export function checkPushupForm(landmarks, state = {}, options = {}) {
-  return analyzeSideViewForm(landmarks, state, { includeArm: true, hipTolerance: 12, neckTolerance: 12, ...options });
+  // Same body-line scoring as plank (shoulder–ankle offset). Invariant to the
+  // torso rising/lowering during the rep — only cares that hips stay inline.
+  return analyzeSideViewForm(landmarks, state, {
+    hipTolerance: 28,
+    neckTolerance: 42,
+    hipEndpoint: "ankle",
+    useLineOffset: true,
+    offsetTolerance: 4.5,
+    lenientNeck: true,
+    goodFrames: 10,
+    badFrames: 12,
+    smoothWindow: 10,
+    enterIssueFrames: 10,
+    exitIssueFrames: 14,
+    ...options,
+  });
 }
 
 export function checkPlankForm(landmarks, state = {}, options = {}) {
-  return analyzeSideViewForm(landmarks, state, { includeArm: false, hipTolerance: 12, neckTolerance: 12, ...options });
+  // Side plank: score hips against the shoulder–ankle line (not average Y).
+  // Slightly looser than before so left-side foreshortening doesn't false-fail.
+  return analyzeSideViewForm(landmarks, state, {
+    hipTolerance: 32,
+    neckTolerance: 45,
+    hipEndpoint: "ankle",
+    useLineOffset: true,
+    offsetTolerance: 5.5,
+    lenientNeck: true,
+    goodFrames: 8,
+    badFrames: 10,
+    smoothWindow: 10,
+    enterIssueFrames: 8,
+    exitIssueFrames: 12,
+    ...options,
+  });
 }
 
 /* ───────────────────────────────────────────────────────────────
@@ -633,7 +776,7 @@ export class PushupPlankCalibrator {
       if (confSamples.length < CALIBRATION_MIN_SAMPLES) {
         this.state = "rejected";
         this.rejectedAt = 0;
-        this.lastRejectionReason = "Calibration looks off; check your position and try again";
+        this.lastRejectionReason = "Calibration looks off, check your position and try again";
         return {
           state: "rejected",
           progressPct: 1,
@@ -655,7 +798,7 @@ export class PushupPlankCalibrator {
       if (!hipInRange || !neckInRange) {
         this.state = "rejected";
         this.rejectedAt = 0;
-        this.lastRejectionReason = "Calibration looks off; check your position and try again";
+        this.lastRejectionReason = "Calibration looks off, check your position and try again";
         return {
           state: "rejected",
           progressPct: 1,
@@ -667,7 +810,7 @@ export class PushupPlankCalibrator {
       if (!hipStable || !neckStable) {
         this.state = "rejected";
         this.rejectedAt = 0;
-        this.lastRejectionReason = "Calibration looks off; hold still and try again";
+        this.lastRejectionReason = "Calibration looks off, hold still and try again";
         return {
           state: "rejected",
           progressPct: 1,
@@ -831,6 +974,125 @@ class VelocityTracker {
   }
 }
 
+/**
+ * Knee valgus / flare vs the hip→ankle line in the frontal plane.
+ * Prefer world landmarks so forward knee travel (z) is ignored.
+ * Positive = knee medial of the hip–ankle line (cave-in).
+ * midX = body midline (avg hip or ankle x) so left/right work in world + image space.
+ */
+function squatKneeMedialOffset(hip, knee, ankle, midX) {
+  if (!hip || !knee || !ankle || !Number.isFinite(midX)) return 0;
+  const ySpan = ankle.y - hip.y;
+  const t = Math.abs(ySpan) > 1e-4
+    ? clamp((knee.y - hip.y) / ySpan, 0, 1)
+    : 0.5;
+  const expectedX = hip.x + t * (ankle.x - hip.x);
+  // + when knee moves from the hip–ankle line toward the body midline.
+  const towardMid = Math.sign(midX - expectedX) || 1;
+  return towardMid * (knee.x - expectedX);
+}
+
+/** Plain {x,y,visibility} copy — MediaPipe landmark objects are unsafe to reuse. */
+function squatPlainPt(lm) {
+  if (!lm) return null;
+  const x = Number(lm.x);
+  const y = Number(lm.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x, y, visibility: Number(lm.visibility ?? 1) };
+}
+
+/**
+ * Green squat correction legs from the SAME landmarks the skeleton uses.
+ * Exact hip→knee→ankle clones, slid sideways so they sit beside the real legs.
+ * Exported so the draw loop can call this directly (never drop green guides).
+ */
+export function buildSquatCorrectionGuides(landmarks) {
+  if (!landmarks || landmarks.length < 33) return [];
+
+  const lHip = squatPlainPt(landmarks[LM.L_HIP]);
+  const rHip = squatPlainPt(landmarks[LM.R_HIP]);
+  const lKnee = squatPlainPt(landmarks[LM.L_KNEE]);
+  const rKnee = squatPlainPt(landmarks[LM.R_KNEE]);
+  const lAnkle = squatPlainPt(landmarks[LM.L_ANKLE]);
+  const rAnkle = squatPlainPt(landmarks[LM.R_ANKLE]);
+  if (!lHip || !rHip || !lKnee || !rKnee || !lAnkle || !rAnkle) return [];
+
+  const kneeMid = (lKnee.x + rKnee.x) / 2;
+  const half = Math.max(Math.abs(rAnkle.x - lAnkle.x) / 2, 0.06);
+  const leftIsLowerX = lAnkle.x <= rAnkle.x;
+  const targetLX = leftIsLowerX ? kneeMid - half : kneeMid + half;
+  const targetRX = leftIsLowerX ? kneeMid + half : kneeMid - half;
+
+  let dxL = targetLX - lKnee.x;
+  let dxR = targetRX - rKnee.x;
+  const MIN = 0.045;
+  if (Math.abs(dxL) < MIN) dxL = (leftIsLowerX ? -1 : 1) * MIN;
+  if (Math.abs(dxR) < MIN) dxR = (leftIsLowerX ? 1 : -1) * MIN;
+
+  const shift = (p, dx) => ({ x: p.x + dx, y: p.y, visibility: p.visibility });
+  const leg = (hip, knee, ankle, dx) => {
+    const h = shift(hip, dx);
+    const k = shift(knee, dx);
+    const a = shift(ankle, dx);
+    return [
+      { from: h, to: k, type: "leg" },
+      { from: k, to: a, type: "leg" },
+    ];
+  };
+
+  return [
+    ...leg(lHip, lKnee, lAnkle, dxL),
+    ...leg(rHip, rKnee, rAnkle, dxR),
+  ];
+}
+
+/**
+ * Squat form overlay flags → red landmarks + green spaced leg copies.
+ */
+function buildSquatLateralOverlay(guidePts, flags) {
+  if (!guidePts || !flags) {
+    return { formOk: true, badLandmarks: [], guideLines: [], flags: null };
+  }
+
+  const hasCave = !!(flags.leftCave || flags.rightCave);
+  const hasFlare = !!(flags.leftFlare || flags.rightFlare);
+  // Hip-shift alone never paints red without green — skip visual for it.
+  const hasFlags = hasCave || hasFlare;
+
+  if (!hasFlags) {
+    return { formOk: true, badLandmarks: [], guideLines: [], flags };
+  }
+
+  const badLandmarks = hasCave
+    ? [LM.L_HIP, LM.L_KNEE, LM.L_ANKLE, LM.R_HIP, LM.R_KNEE, LM.R_ANKLE]
+    : [
+      ...(flags.leftFlare ? [LM.L_HIP, LM.L_KNEE, LM.L_ANKLE] : []),
+      ...(flags.rightFlare ? [LM.R_HIP, LM.R_KNEE, LM.R_ANKLE] : []),
+    ];
+
+  // Build from whatever points we were given (caller should pass raw landmarks).
+  const asList = [
+    guidePts.lHip, guidePts.rHip, guidePts.lKnee, guidePts.rKnee,
+    guidePts.lAnkle, guidePts.rAnkle,
+  ];
+  // Fake a 33-slot list for the shared builder.
+  const fake = new Array(33);
+  fake[LM.L_HIP] = guidePts.lHip;
+  fake[LM.R_HIP] = guidePts.rHip;
+  fake[LM.L_KNEE] = guidePts.lKnee;
+  fake[LM.R_KNEE] = guidePts.rKnee;
+  fake[LM.L_ANKLE] = guidePts.lAnkle;
+  fake[LM.R_ANKLE] = guidePts.rAnkle;
+  const guideLines = asList.every(Boolean) ? buildSquatCorrectionGuides(fake) : [];
+
+  return {
+    formOk: false,
+    badLandmarks,
+    guideLines,
+    flags,
+  };
+}
+
 /* ───────────────────────────────────────────────────────────────
  * Exercise Profiles  (camera-angle-aware, strict rep counting)
  *
@@ -848,83 +1110,223 @@ class VelocityTracker {
 const EXERCISE_PROFILES = {
 
   /* ══════════════════════════════════════════════════════════
-   *  SQUAT
-   *  Best viewed from side/angled; need to see knee bend & hip hinge
+   *  SQUAT  (~45° three-quarter view)
+   *  Depth/reps from hip–knee clearance. Form (knee cave / flare /
+   *  hip shift) only while loaded — never while standing tall.
    * ══════════════════════════════════════════════════════════ */
   squat: {
     label: "Squat",
     type: "rep",
-    preferredAngles: ["side", "angled"],
-    angleHint: "Stand sideways to camera for best tracking",
+    preferredAngles: ["angled", "front", "side"],
+    angleHint: "Turn a bit more toward the camera (~45°) so both legs stay visible",
     bodyOrientation: "upright",
-    requiredLandmarks: [LM.L_HIP, LM.R_HIP, LM.L_KNEE, LM.R_KNEE, LM.L_ANKLE, LM.R_ANKLE, LM.L_SHOULDER, LM.R_SHOULDER],
+    requiredLandmarks: [
+      LM.L_HIP, LM.R_HIP, LM.L_KNEE, LM.R_KNEE, LM.L_ANKLE, LM.R_ANKLE,
+      LM.L_SHOULDER, LM.R_SHOULDER,
+    ],
 
-    computeAngles(p) {
-      const lKnee = calculateAngle(p[LM.L_HIP], p[LM.L_KNEE], p[LM.L_ANKLE]);
-      const rKnee = calculateAngle(p[LM.R_HIP], p[LM.R_KNEE], p[LM.R_ANKLE]);
-      const lHip  = calculateAngle(p[LM.L_SHOULDER], p[LM.L_HIP], p[LM.L_KNEE]);
-      const rHip  = calculateAngle(p[LM.R_SHOULDER], p[LM.R_HIP], p[LM.R_KNEE]);
-      const torsoTilt = Math.abs(tiltFromVertical(
-        mid(p[LM.L_HIP], p[LM.R_HIP]),
-        mid(p[LM.L_SHOULDER], p[LM.R_SHOULDER])
-      ));
-      // Knee tracking over toes; compare knee x to ankle x (side view)
-      const kneeOverToe = Math.abs(
-        ((p[LM.L_KNEE].x + p[LM.R_KNEE].x) / 2) - ((p[LM.L_ANKLE].x + p[LM.R_ANKLE].x) / 2)
-      ) * 100;
+    /**
+     * primary = hip–knee vertical clearance in meters.
+     * Standing → large positive; parallel / below → ~0 or negative.
+     *
+     * Knee cave = frontal-plane medial drift of the knee vs hip→ankle
+     * (world X when available so forward knee travel is ignored).
+     */
+    computeAngles(p, engine, worldLandmarks = null) {
+      const useWorld = !!(
+        worldLandmarks
+        && worldLandmarks.length >= 33
+        && worldLandmarks[LM.L_HIP] && worldLandmarks[LM.R_HIP]
+        && worldLandmarks[LM.L_KNEE] && worldLandmarks[LM.R_KNEE]
+        && worldLandmarks[LM.L_ANKLE] && worldLandmarks[LM.R_ANKLE]
+      );
+
+      const src = useWorld ? worldLandmarks : p;
+      const lHip = src[LM.L_HIP];
+      const rHip = src[LM.R_HIP];
+      const lKnee = src[LM.L_KNEE];
+      const rKnee = src[LM.R_KNEE];
+      const lAnkle = src[LM.L_ANKLE];
+      const rAnkle = src[LM.R_ANKLE];
+
+      const midHipY = (lHip.y + rHip.y) / 2;
+      const midKneeY = (lKnee.y + rKnee.y) / 2;
+      const sep = Math.abs(midKneeY - midHipY);
+      const kneesBelowHips2D =
+        ((p[LM.L_KNEE].y + p[LM.R_KNEE].y) / 2) > ((p[LM.L_HIP].y + p[LM.R_HIP].y) / 2);
+      let clearance = kneesBelowHips2D ? sep : -sep;
+      if (!useWorld) {
+        const scale = Math.max(dist(p[LM.L_SHOULDER], p[LM.L_HIP]), 0.15);
+        clearance = clearance / scale * 0.25;
+      }
+
+      const ALPHA = 0.40;
+      if (!engine._squatDepthSmoothed || !Number.isFinite(engine._squatDepthSmoothed)) {
+        engine._squatDepthSmoothed = clearance;
+      } else {
+        engine._squatDepthSmoothed =
+          ALPHA * clearance + (1 - ALPHA) * engine._squatDepthSmoothed;
+      }
+
+      // Form metrics in the same space as depth (world preferred).
+      const midHipX = (lHip.x + rHip.x) / 2;
+      const midAnkleX = (lAnkle.x + rAnkle.x) / 2;
+      const midX = (midHipX + midAnkleX) / 2;
+      const leftMedial = squatKneeMedialOffset(lHip, lKnee, lAnkle, midX);
+      const rightMedial = squatKneeMedialOffset(rHip, rKnee, rAnkle, midX);
+      const hipLateralOffset = midHipX - midAnkleX;
+      const stanceWidth = Math.max(Math.abs(lAnkle.x - rAnkle.x), useWorld ? 0.08 : 0.05);
+      const kneeSpan = Math.abs(lKnee.x - rKnee.x);
+      // World + image ratios — angled webcams foreshorten; take the more collapsed.
+      const worldRatio = kneeSpan / stanceWidth;
+      const imgKneeSpan = Math.abs(p[LM.L_KNEE].x - p[LM.R_KNEE].x);
+      const imgAnkleSpan = Math.max(Math.abs(p[LM.L_ANKLE].x - p[LM.R_ANKLE].x), 0.05);
+      const imageRatio = imgKneeSpan / imgAnkleSpan;
+      const kneeAnkleWidthRatio = Math.min(worldRatio, imageRatio);
+
       return {
-        primary: (lKnee + rKnee) / 2,
-        hipAngle: (lHip + rHip) / 2,
-        kneeDiff: Math.abs(lKnee - rKnee),
-        torsoTilt,
-        kneeOverToe,
+        primary: engine._squatDepthSmoothed,
+        hipKneeClearance: engine._squatDepthSmoothed,
+        usingWorld: useWorld,
+        leftMedial,
+        rightMedial,
+        hipLateralOffset,
+        stanceWidth,
+        kneeAnkleWidthRatio,
+        // Image-space points for drawing green guides on the skeleton.
+        guidePts: {
+          lHip: p[LM.L_HIP],
+          rHip: p[LM.R_HIP],
+          lKnee: p[LM.L_KNEE],
+          rKnee: p[LM.R_KNEE],
+          lAnkle: p[LM.L_ANKLE],
+          rAnkle: p[LM.R_ANKLE],
+        },
       };
     },
 
     phases: ["READY", "DESCENDING", "BOTTOM", "ASCENDING", "COMPLETE"],
-    thresholds: { startStanding: 158, enterBottom: 108, standBack: 158 },
-    minTransitionMs: 180,
-    minROM: 45,            // must bend at least 45° from standing
-    minRepDurationMs: 800, // a full squat can't happen in <0.8s
-    minVelocity: 15,       // deg/s; must move intentionally
+    // Clearance thresholds in meters. Standing ≈ 0.15–0.30 m above knees.
+    thresholds: {
+      standClearance: 0.10,
+      enterBottom: 0.045,
+      leaveBottom: 0.07,
+      // Form overlays only once hips have dropped below this (not standing).
+      formActiveClearance: 0.085,
+    },
+    minTransitionMs: 140,
+    minROM: 0.08,
+    minRepDurationMs: 600,
+    minVelocity: 0.03,
+    minRepFrames: 4,
 
-    validateAngle(cam) {
-      // Squats work from side or angled view; front view is unreliable
-      // because knee flexion is ambiguous when viewed head-on
-      return cam.viewAngle === "side" || cam.viewAngle === "angled";
+    // Angled view: allow some foreshortening; still catch real cave-ins.
+    lateral: {
+      minKneeAnkleRatio: 0.62,
+      kneeFlareOut: 0.48,
+      hipShift: 0.45,
+      warnFrames: 10,
+    },
+
+    validateAngle() {
+      // Never hard-block reps on camera angle. Soft tip only in checkForm.
+      return true;
     },
 
     transitionRules(a, phase) {
       const t = this.thresholds;
+      const c = a.primary;
       switch (phase) {
-        case "READY":      return a.primary > t.startStanding ? "DESCENDING" : null;
-        case "DESCENDING": return a.primary < t.enterBottom ? "BOTTOM" : null;
-        case "BOTTOM":     return a.primary > t.enterBottom + 12 ? "ASCENDING" : null;
-        case "ASCENDING":  return a.primary > t.standBack ? "COMPLETE" : null;
-        default: return null;
+        case "READY":
+          return c > t.standClearance ? "DESCENDING" : null;
+        case "DESCENDING":
+          return c < t.enterBottom ? "BOTTOM" : null;
+        case "BOTTOM":
+          return c > t.leaveBottom ? "ASCENDING" : null;
+        case "ASCENDING":
+          return c > t.standClearance ? "COMPLETE" : null;
+        default:
+          return null;
       }
     },
 
-    stabilityChecks(a) {
-      // Block rep if torso is excessively tilted (probably a bow, not a squat)
-      if (a.torsoTilt > 55) return { pass: false, reason: "Excessive forward lean; not a valid squat" };
+    stabilityChecks() {
+      // Lateral issues are coached visually; they do not void the rep.
       return { pass: true };
     },
 
-    checkForm(a, phase, cam) {
-      // Camera angle guidance takes priority
-      if (cam && !this.validateAngle(cam)) {
+    checkForm(a, phase, cam, engine) {
+      const emptyOverlay = { formOk: true, badLandmarks: [], guideLines: [], flags: null };
+
+      // Soft tip only for an extreme profile (far leg nearly invisible).
+      if (
+        cam
+        && cam.viewAngle === "side"
+        && (cam.shoulderWidthRatio ?? 1) < 0.22
+        && phase === "READY"
+      ) {
+        a.squatOverlay = emptyOverlay;
         return { type: "info", msg: this.angleHint };
       }
-      if (phase === "BOTTOM" && a.primary < 55)        return { type: "warning", msg: "Too deep; risk of knee strain" };
-      if (phase === "BOTTOM" && a.primary > 120)        return { type: "warning", msg: "Too shallow; go deeper for a full rep" };
-      if (a.torsoTilt > 40)                             return { type: "warning", msg: "Chest too forward; stay upright" };
-      if (a.kneeDiff > 18)                              return { type: "warning", msg: "Uneven knees; push both sides evenly" };
-      if (phase === "BOTTOM" && a.hipAngle < 70)        return { type: "warning", msg: "Hips too far back; sit down, not back" };
-      if (phase === "BOTTOM" && a.primary >= 55 && a.primary <= 100)
-                                                        return { type: "good", msg: "Good depth; parallel or below 🔥" };
-      if (phase === "ASCENDING")                        return { type: "good", msg: "Drive up through your heels!" };
-      if (phase === "READY")                            return { type: "good", msg: "Stand tall; ready to squat" };
+
+      const state = engine._formState.squat || (engine._formState.squat = {
+        cave: 0, leftFlare: 0, rightFlare: 0,
+      });
+
+      // Correction lines / cave checks only while actually squatting (hips down).
+      const isLoaded = (a.primary ?? 1) < this.thresholds.formActiveClearance;
+      if (!isLoaded) {
+        state.cave = 0;
+        state.leftFlare = 0;
+        state.rightFlare = 0;
+        a.squatOverlay = emptyOverlay;
+        if (phase === "READY" || phase === "DESCENDING" || phase === "ASCENDING") {
+          return { type: "good", msg: "Stand tall, ready to squat" };
+        }
+        return null;
+      }
+
+      const lat = this.lateral;
+      const stance = Math.max(a.stanceWidth || 0.12, a.usingWorld ? 0.10 : 0.05);
+      const flareThresh = lat.kneeFlareOut * stance;
+      const widthRatio = a.kneeAnkleWidthRatio ?? 1;
+
+      const tick = (key, active) => {
+        if (active) state[key] = Math.min(state[key] + 1, 40);
+        else state[key] = Math.max(state[key] - 2, 0);
+        return state[key] >= lat.warnFrames;
+      };
+
+      const caveActive = tick("cave", widthRatio < lat.minKneeAnkleRatio);
+      const leftMed = a.leftMedial ?? 0;
+      const rightMed = a.rightMedial ?? 0;
+      const leftFlare = tick("leftFlare", widthRatio > 1.2 && leftMed < -flareThresh);
+      const rightFlare = tick("rightFlare", widthRatio > 1.2 && rightMed < -flareThresh);
+
+      a.squatOverlay = buildSquatLateralOverlay(a.guidePts, {
+        leftCave: caveActive,
+        rightCave: caveActive,
+        leftFlare,
+        rightFlare,
+        hipShift: false,
+      });
+
+      if (caveActive) {
+        return { type: "warning", msg: "Knees caving in, push them out over your toes" };
+      }
+      if (leftFlare || rightFlare) {
+        return { type: "warning", msg: "Knees flaring out, track them over your toes" };
+      }
+
+      if (phase === "DESCENDING") {
+        return { type: "info", msg: "Keep your chest up, sit down between your heels" };
+      }
+      if (phase === "BOTTOM") {
+        return { type: "good", msg: "Good depth — drive up, knees out" };
+      }
+      if (phase === "ASCENDING") {
+        return { type: "good", msg: "Drive up through your mid-foot!" };
+      }
       return null;
     },
   },
@@ -937,7 +1339,7 @@ const EXERCISE_PROFILES = {
     label: "Bicep Curl",
     type: "rep",
     preferredAngles: ["side"],
-    angleHint: "Turn sideways to camera; curls are best tracked from the side",
+    angleHint: "Turn sideways to camera, curls are best tracked from the side",
     bodyOrientation: "upright",
     requiredLandmarks: [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP],
     requiredLandmarkGroups: [
@@ -949,56 +1351,50 @@ const EXERCISE_PROFILES = {
       const activeArm = chooseCurlArm(p, engine._activeArm);
       engine._activeArm = activeArm;
 
-      const curlAngle = activeArm === "left"
-        ? calculateAngle(p[LM.L_SHOULDER], p[LM.L_ELBOW], p[LM.L_WRIST])
-        : calculateAngle(p[LM.R_SHOULDER], p[LM.R_ELBOW], p[LM.R_WRIST]);
-
-      // Stable torso-width normalizer: use the side with CLEAR separation
-      // in x (the "near" side in a profile view). This avoids the far arm
-      // collapsing to near-zero x-distance, which previously caused the
-      // right arm to always fail the drift check.
-      const lTorsoX = Math.abs(p[LM.L_SHOULDER].x - p[LM.L_HIP].x);
-      const rTorsoX = Math.abs(p[LM.R_SHOULDER].x - p[LM.R_HIP].x);
-      const torsoWidth = Math.max(lTorsoX, rTorsoX, 0.0001);
+      // Never throw — a crash here stops the whole draw loop / skeleton.
+      if (!activeArm) {
+        return { primary: 180, elbowAwayNorm: 0, peakElbowAway: 0, activeArm: null };
+      }
 
       const shoulder = p[activeArm === "left" ? LM.L_SHOULDER : LM.R_SHOULDER];
       const elbow = p[activeArm === "left" ? LM.L_ELBOW : LM.R_ELBOW];
-      const rawForward = (elbow.x - shoulder.x) / torsoWidth;
+      const wrist = p[activeArm === "left" ? LM.L_WRIST : LM.R_WRIST];
+      const hip = p[activeArm === "left" ? LM.L_HIP : LM.R_HIP];
+      if (!shoulder || !elbow || !wrist || !hip) {
+        return { primary: 180, elbowAwayNorm: 0, peakElbowAway: 0, activeArm };
+      }
 
-      // Per-frame EMA smoothing of the forward drift with alpha 0.25 so
-      // 1-frame pose estimation noise never causes a false spike in the
-      // drift signal (eliminates rapid comment switching / jitter).
+      const curlAngle = calculateAngle(shoulder, elbow, wrist);
+
+      // Distance of elbow from the shoulder→hip body line, in torso lengths.
+      const torsoLen = Math.max(dist(shoulder, hip), 0.08);
+      const ySpan = hip.y - shoulder.y;
+      const t = Math.abs(ySpan) > 1e-4
+        ? clamp((elbow.y - shoulder.y) / ySpan, -0.2, 1.2)
+        : 0;
+      const bodyX = shoulder.x + t * (hip.x - shoulder.x);
+      const rawAway = Math.abs(elbow.x - bodyX) / torsoLen;
+
       if (!engine._curlBaseline || engine._curlBaseline.arm !== activeArm) {
         engine._curlBaseline = {
           arm: activeArm,
-          anchorBaseline: rawForward,
-          smoothedForward: rawForward,
-          anchorSamples: 1,
-          driftStrikeCount: 0,
+          smoothedAway: rawAway,
+          peakAway: rawAway,
         };
       } else {
-        const ALPHA = 0.25;
-        engine._curlBaseline.smoothedForward =
-          ALPHA * rawForward + (1 - ALPHA) * engine._curlBaseline.smoothedForward;
-
-        // Only ever lock in the anchor during arm-down (bottom of rep,
-        // stable standing position), and stop updating once we have a
-        // solid sample so mid-set natural drift does not re-anchor the
-        // baseline and hide genuine cheating.
-        if (curlAngle > 155 && engine._curlBaseline.anchorSamples < 18) {
-          const k = 2 / (engine._curlBaseline.anchorSamples + 2);
-          engine._curlBaseline.anchorBaseline =
-            engine._curlBaseline.anchorBaseline * (1 - k) + rawForward * k;
-          engine._curlBaseline.anchorSamples += 1;
-        }
+        const ALPHA = 0.30;
+        engine._curlBaseline.smoothedAway =
+          ALPHA * rawAway + (1 - ALPHA) * engine._curlBaseline.smoothedAway;
+        engine._curlBaseline.peakAway = Math.max(
+          engine._curlBaseline.peakAway,
+          engine._curlBaseline.smoothedAway
+        );
       }
-
-      const elbowDriftFromBaseline =
-        engine._curlBaseline.smoothedForward - engine._curlBaseline.anchorBaseline;
 
       return {
         primary: curlAngle,
-        elbowDriftFromBaseline,
+        elbowAwayNorm: engine._curlBaseline.smoothedAway,
+        peakElbowAway: engine._curlBaseline.peakAway,
         activeArm,
       };
     },
@@ -1010,6 +1406,12 @@ const EXERCISE_PROFILES = {
     minRepDurationMs: 450,
     minVelocity: 0,
     minRepFrames: 4,
+
+    // Elbow must stay close to the body line (torso-length units).
+    elbowInline: {
+      warn: 0.10,
+      fail: 0.14,
+    },
 
     validateAngle(cam) {
       return cam.viewAngle === "side";
@@ -1028,23 +1430,16 @@ const EXERCISE_PROFILES = {
     },
 
     stabilityChecks(a, engine) {
-      // Extremely loose, strike-debounced drift guard.
-      // ONLY blocks a rep if the SMOOTHED elbow drift has exceeded 1.5x
-      // the user's own torso width from their anchor baseline for 6
-      // CONSECUTIVE frames. A torso-width = ~shoulder to hip, so this
-      // only fires when the user visibly and repeatedly swings the
-      // elbow as a unit to generate momentum. Natural minor shoulder
-      // flexion that happens in strict curls, and all 1-frame / 2-frame
-      // pose jitter, are completely ignored.
-      const drift = Math.abs(a.elbowDriftFromBaseline ?? 0);
+      // Reject the rep if the elbow left the body line at any point this cycle.
+      const peak = a.peakElbowAway ?? a.elbowAwayNorm ?? 0;
       const cb = engine._curlBaseline;
-      if (cb && drift > 1.5) {
-        cb.driftStrikeCount = Math.min(cb.driftStrikeCount + 1, 999);
-        if (cb.driftStrikeCount >= 6) {
-          return { pass: false, reason: "Elbow swinging too much; anchor it at your side" };
-        }
-      } else if (cb) {
-        cb.driftStrikeCount = 0;
+      if (cb) cb.peakAway = 0;
+
+      if (peak > this.elbowInline.fail) {
+        return {
+          pass: false,
+          reason: "Elbow is away from your body, keep it inline",
+        };
       }
       return { pass: true };
     },
@@ -1053,11 +1448,22 @@ const EXERCISE_PROFILES = {
       if (cam && !this.validateAngle(cam)) {
         return { type: "info", msg: this.angleHint };
       }
-      // IMPORTANT: no per-frame drift warning here. The drift guard is
-      // debounced inside stabilityChecks and only fires on sustained
-      // cheating, so the feedback text never rapidly flickers between
-      // "good" and "drift warning" on tiny jitter spikes. We only show
-      // the standard ROM/phase coaching messages below.
+
+      // Elbow anchoring — short hysteresis so the cue kicks in quickly.
+      const state = engine._formState.bicep_curl || (engine._formState.bicep_curl = {
+        awayFrames: 0,
+      });
+      const away = a.elbowAwayNorm ?? 0;
+
+      if (away > this.elbowInline.warn) {
+        state.awayFrames = Math.min(state.awayFrames + 1, 40);
+      } else {
+        state.awayFrames = Math.max(state.awayFrames - 2, 0);
+      }
+
+      if (state.awayFrames >= 6) {
+        return { type: "warning", msg: "Elbow is away from your body, keep it inline" };
+      }
 
       const isExtending = engine._velocityTracker.velocity > 0;
 
@@ -1084,39 +1490,152 @@ const EXERCISE_PROFILES = {
     label: "Push-Up",
     type: "rep",
     preferredAngles: ["side", "angled"],
-    angleHint: "Place camera to the side; push-ups need a profile view",
+    angleHint: "Place the camera on the floor beside you — true side / profile view",
     bodyOrientation: "horizontal",
-    requiredLandmarks: [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_ELBOW, LM.R_ELBOW, LM.L_WRIST, LM.R_WRIST, LM.L_HIP, LM.R_HIP, LM.L_ANKLE, LM.R_ANKLE],
+    // Side view often hides the far arm; accept either full side.
+    // Slightly looser groups: body line OR arm is enough to start tracking.
+    requiredLandmarks: [],
+    requiredLandmarkGroups: [
+      [LM.L_SHOULDER, LM.L_ELBOW, LM.L_WRIST],
+      [LM.R_SHOULDER, LM.R_ELBOW, LM.R_WRIST],
+    ],
+    trackingLandmarks: [
+      LM.L_SHOULDER, LM.R_SHOULDER, LM.L_ELBOW, LM.R_ELBOW, LM.L_WRIST, LM.R_WRIST,
+      LM.L_HIP, LM.R_HIP, LM.L_ANKLE, LM.R_ANKLE,
+      LM.L_EAR, LM.R_EAR, LM.L_KNEE, LM.R_KNEE, LM.NOSE,
+    ],
 
-    computeAngles(p) {
-      const lElbow = calculateAngle(p[LM.L_SHOULDER], p[LM.L_ELBOW], p[LM.L_WRIST]);
-      const rElbow = calculateAngle(p[LM.R_SHOULDER], p[LM.R_ELBOW], p[LM.R_WRIST]);
-      const primary = (lElbow + rElbow) / 2;
-      const lBody = calculateAngle(p[LM.L_SHOULDER], p[LM.L_HIP], p[LM.L_ANKLE]);
-      const rBody = calculateAngle(p[LM.R_SHOULDER], p[LM.R_HIP], p[LM.R_ANKLE]);
-      const bodyLine = (lBody + rBody) / 2;
-      const hipY = (p[LM.L_HIP].y + p[LM.R_HIP].y) / 2;
-      const shoulderY = (p[LM.L_SHOULDER].y + p[LM.R_SHOULDER].y) / 2;
-      const ankleY = (p[LM.L_ANKLE].y + p[LM.R_ANKLE].y) / 2;
-      const expectedHipY = (shoulderY + ankleY) / 2;
-      const hipDeviation = (hipY - expectedHipY) * 100;
-      const shoulderHeight = shoulderY;
-      return { primary, bodyLine, hipDeviation, shoulderHeight };
+    computeAngles(p, engine) {
+      // Softer visibility for side-view near arm (left side was dropping out at 0.4).
+      const armVis = (pt) => vis(pt, 0.28);
+      const bodyVis = (pt) => vis(pt, 0.32);
+
+      const leftArmOk = armVis(p[LM.L_SHOULDER]) && armVis(p[LM.L_ELBOW]) && armVis(p[LM.L_WRIST]);
+      const rightArmOk = armVis(p[LM.R_SHOULDER]) && armVis(p[LM.R_ELBOW]) && armVis(p[LM.R_WRIST]);
+      const leftBodyOk = bodyVis(p[LM.L_SHOULDER]) && bodyVis(p[LM.L_HIP]) && bodyVis(p[LM.L_ANKLE]);
+      const rightBodyOk = bodyVis(p[LM.R_SHOULDER]) && bodyVis(p[LM.R_HIP]) && bodyVis(p[LM.R_ANKLE]);
+
+      const scoreArm = (side) => {
+        const isLeft = side === "left";
+        const sh = p[isLeft ? LM.L_SHOULDER : LM.R_SHOULDER];
+        const el = p[isLeft ? LM.L_ELBOW : LM.R_ELBOW];
+        const wr = p[isLeft ? LM.L_WRIST : LM.R_WRIST];
+        if (!armVis(sh) || !armVis(el) || !armVis(wr)) return -Infinity;
+        // Prefer the arm that looks more extended in image space (clearer side profile).
+        const len = dist(sh, el) + dist(el, wr);
+        const conf = (sh.visibility + el.visibility + wr.visibility) / 3;
+        return conf * 2 + len;
+      };
+
+      const state = engine._formState.pushupTrack || (engine._formState.pushupTrack = {
+        side: null,
+        lastElbow: 155,
+        readyFrames: 0,
+        armed: false,
+      });
+
+      const leftScore = scoreArm("left");
+      const rightScore = scoreArm("right");
+      let side = state.side;
+      // Sticky side — only swap if the other arm is clearly better (fixes left-side flicker).
+      if (side === "left" && leftScore > -Infinity && leftScore >= rightScore - 0.35) {
+        side = "left";
+      } else if (side === "right" && rightScore > -Infinity && rightScore >= leftScore - 0.35) {
+        side = "right";
+      } else if (leftScore > -Infinity || rightScore > -Infinity) {
+        side = leftScore >= rightScore ? "left" : "right";
+      } else if (leftBodyOk) {
+        side = "left";
+      } else if (rightBodyOk) {
+        side = "right";
+      } else {
+        side = state.side;
+      }
+      if (side) state.side = side;
+
+      const isLeft = side === "left";
+      const shoulder = side ? p[isLeft ? LM.L_SHOULDER : LM.R_SHOULDER] : null;
+      const elbow = side ? p[isLeft ? LM.L_ELBOW : LM.R_ELBOW] : null;
+      const wrist = side ? p[isLeft ? LM.L_WRIST : LM.R_WRIST] : null;
+      const hip = side ? p[isLeft ? LM.L_HIP : LM.R_HIP] : null;
+      const ankle = side ? p[isLeft ? LM.L_ANKLE : LM.R_ANKLE] : null;
+
+      // Arms drive the rep counter. Never invent a fake 180° when the arm is missing
+      // (that was auto-advancing READY → DESCENDING while walking into frame).
+      let armVisible = false;
+      let primary = state.lastElbow;
+      if (shoulder && elbow && wrist && armVis(shoulder) && armVis(elbow) && armVis(wrist)) {
+        primary = calculateAngle(shoulder, elbow, wrist);
+        state.lastElbow = primary;
+        armVisible = true;
+      }
+
+      let bodyLine = 180;
+      let hipDeviation = 0;
+      const bodyOk = !!(shoulder && hip && ankle && bodyVis(shoulder) && bodyVis(hip) && bodyVis(ankle));
+      if (bodyOk) {
+        bodyLine = calculateAngle(shoulder, hip, ankle);
+        hipDeviation = hipOffsetFromBodyLine(shoulder, hip, ankle);
+      }
+
+      // Stance gate: must look like a floor push-up, not standing / walking in.
+      const horizontal = !!(engine._cameraAngle && engine._cameraAngle.isHorizontal);
+      const wristUnder = !!(shoulder && wrist && armVisible && wrist.y > shoulder.y + 0.015);
+      const torsoFlat = bodyOk && Math.abs(shoulder.y - ankle.y) < 0.42;
+      const inPushupStance = armVisible && (horizontal || torsoFlat) && wristUnder && bodyLine > 120;
+
+      if (inPushupStance && primary > 125) {
+        state.readyFrames = Math.min(state.readyFrames + 1, 40);
+        if (state.readyFrames >= 10) state.armed = true;
+      } else if (!inPushupStance) {
+        state.readyFrames = Math.max(0, state.readyFrames - 3);
+        if (state.readyFrames < 4) state.armed = false;
+      }
+
+      if (side) engine._activeArm = side;
+
+      return {
+        primary,
+        bodyLine,
+        hipDeviation,
+        activeArm: side,
+        armVisible,
+        inPushupStance,
+        armed: state.armed,
+        shoulderHeight: shoulder?.y ?? 0.5,
+      };
     },
 
     phases: ["READY", "DESCENDING", "BOTTOM", "ASCENDING", "COMPLETE"],
-    thresholds: { startExtended: 158, enterBottom: 95, leaveBottom: 108, extendBack: 158 },
-    minTransitionMs: 200,
-    minROM: 50,
-    minRepDurationMs: 900,
-    minVelocity: 12,
+    thresholds: {
+      // Side/left foreshortening compresses elbow angles — use gentler gates.
+      // ROM check still requires a real up→down→up movement.
+      startExtended: 135,
+      enterBottom: 152,
+      leaveBottom: 156,
+      extendBack: 142,
+      // Body-line form (line offset, not ground angle)
+      minBodyLine: 145,
+      warnSag: 6.5,
+      warnPike: -6.5,
+    },
+    minTransitionMs: 100,
+    minROM: 18,
+    minRepDurationMs: 500,
+    minVelocity: 3,
+    minRepFrames: 2,
 
-    validateAngle(cam) {
-      return cam.viewAngle === "side" || cam.viewAngle === "angled";
+    validateAngle() {
+      return true;
     },
 
     transitionRules(a, phase) {
       const t = this.thresholds;
+      // No phase progress without a real arm reading — blocks walk-in false reps.
+      if (!a.armVisible) return null;
+      // Must settle in a push-up stance before the first descent can start.
+      if (!a.armed && (phase === "READY" || phase === null)) return null;
+
       switch (phase) {
         case "READY":      return a.primary > t.startExtended ? "DESCENDING" : null;
         case "DESCENDING": return a.primary < t.enterBottom ? "BOTTOM" : null;
@@ -1127,22 +1646,100 @@ const EXERCISE_PROFILES = {
     },
 
     stabilityChecks(a) {
-      if (a.bodyLine < 140) return { pass: false, reason: "Body not straight; maintain plank position" };
+      // Void the rep if it finished while clearly not in a push-up stance.
+      if (!a.inPushupStance && !a.armed) {
+        return { pass: false, reason: "Get into push-up position first" };
+      }
       return { pass: true };
     },
 
-    checkForm(a, phase, cam) {
-      if (cam && !this.validateAngle(cam)) {
-        return { type: "info", msg: this.angleHint };
+    checkForm(a, phase, cam, engine) {
+      // Sticky coach patterned on plank — form uses body-line offset, not floor tilt.
+      const coach = engine._formState.pushupCoach || (engine._formState.pushupCoach = {
+        candidateMsg: null,
+        candidateType: null,
+        candidateCount: 0,
+        active: null,
+        lockedGoodUntil: 0,
+      });
+      const t = this.thresholds;
+      const now = performance.now();
+
+      let next;
+      if (!a.armed || !a.inPushupStance) {
+        next = { type: "info", msg: "Get into push-up position, body straight, then begin" };
+      } else if (a.hipDeviation > t.warnSag + 1.5) {
+        next = { type: "warning", msg: "Hips sagging, tighten your core" };
+      } else if (a.hipDeviation < t.warnPike - 1.5) {
+        next = { type: "warning", msg: "Hips too high, flatten out" };
+      } else if (a.bodyLine < t.minBodyLine - 12) {
+        next = { type: "warning", msg: "Keep your body in a straight line" };
+      } else if (phase === "BOTTOM" && a.primary > 155) {
+        next = { type: "info", msg: "Go a bit lower, chest toward the floor" };
+      } else if (phase === "BOTTOM") {
+        next = { type: "good", msg: "Good depth, keep hips in line" };
+      } else if (phase === "ASCENDING") {
+        next = { type: "good", msg: "Push up strong, keep hips in line" };
+      } else if (phase === "DESCENDING") {
+        next = { type: "good", msg: "Lower with control, keep hips in line" };
+      } else {
+        next = { type: "good", msg: "Keep hips in line with your body, begin your push-up" };
       }
-      if (a.hipDeviation > 10)                 return { type: "warning", msg: "Hips sagging; tighten core" };
-      if (a.hipDeviation < -12)                return { type: "warning", msg: "Hips too high; flatten out your body" };
-      if (a.bodyLine < 150)                    return { type: "warning", msg: "Maintain a straight body line" };
-      if (phase === "BOTTOM" && a.primary > 110) return { type: "warning", msg: "Go lower; chest toward floor" };
-      if (phase === "BOTTOM" && a.primary <= 95) return { type: "good", msg: "Great depth! Chest near floor 🔥" };
-      if (phase === "ASCENDING")               return { type: "good", msg: "Push strong; full lockout!" };
-      if (phase === "READY")                   return { type: "good", msg: "Good plank position; begin!" };
-      return null;
+
+      const inRep = phase === "DESCENDING" || phase === "BOTTOM" || phase === "ASCENDING" || phase === "READY";
+      if (
+        inRep
+        && coach.active
+        && coach.active.type === "good"
+        && next.type === "good"
+        && next.msg === coach.active.msg
+      ) {
+        coach.lockedGoodUntil = Math.max(coach.lockedGoodUntil || 0, now + 2500);
+        coach.candidateCount = 0;
+        return coach.active;
+      }
+      // Soft-lock good form: ignore brief warning blips mid-rep.
+      if (
+        inRep
+        && coach.active
+        && coach.active.type === "good"
+        && next.type === "warning"
+        && now < (coach.lockedGoodUntil || 0)
+      ) {
+        coach.candidateCount = 0;
+        return coach.active;
+      }
+
+      // Phase tips (good/info) may update a bit faster than hard warnings.
+      const stickyFrames = next.type === "warning" ? 40 : (next.type === "info" ? 18 : 12);
+      if (!coach.active) {
+        coach.active = next;
+        coach.candidateMsg = next.msg;
+        coach.candidateType = next.type;
+        coach.candidateCount = 0;
+        if (next.type === "good") coach.lockedGoodUntil = now + 2500;
+        return coach.active;
+      }
+      if (next.msg === coach.active.msg) {
+        coach.candidateCount = 0;
+        if (next.type === "good") {
+          coach.lockedGoodUntil = Math.max(coach.lockedGoodUntil || 0, now + 2500);
+        }
+        return coach.active;
+      }
+      if (next.msg === coach.candidateMsg) {
+        coach.candidateCount += 1;
+      } else {
+        coach.candidateMsg = next.msg;
+        coach.candidateType = next.type;
+        coach.candidateCount = 1;
+      }
+      if (coach.candidateCount >= stickyFrames) {
+        coach.active = { type: coach.candidateType, msg: coach.candidateMsg };
+        coach.candidateCount = 0;
+        if (coach.active.type === "good") coach.lockedGoodUntil = now + 2500;
+      }
+      return coach.active;
     },
   },
 
@@ -1154,50 +1751,258 @@ const EXERCISE_PROFILES = {
     label: "Plank",
     type: "hold",
     preferredAngles: ["side", "angled"],
-    angleHint: "Place camera to the side to see your body alignment",
+    angleHint: "Place the camera on the floor beside you — true side / profile view",
     bodyOrientation: "horizontal",
-    requiredLandmarks: [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP, LM.L_ANKLE, LM.R_ANKLE],
+    requiredLandmarks: [],
+    requiredLandmarkGroups: [
+      // Need an arm support point so lying flat on the floor doesn't count as a plank.
+      [LM.L_SHOULDER, LM.L_HIP, LM.L_ANKLE, LM.L_ELBOW],
+      [LM.R_SHOULDER, LM.R_HIP, LM.R_ANKLE, LM.R_ELBOW],
+      [LM.L_SHOULDER, LM.L_HIP, LM.L_ANKLE, LM.L_WRIST],
+      [LM.R_SHOULDER, LM.R_HIP, LM.R_ANKLE, LM.R_WRIST],
+    ],
+    trackingLandmarks: [
+      LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP, LM.L_ANKLE, LM.R_ANKLE,
+      LM.L_ELBOW, LM.R_ELBOW, LM.L_WRIST, LM.R_WRIST,
+      LM.L_EAR, LM.R_EAR, LM.L_KNEE, LM.R_KNEE, LM.NOSE,
+    ],
 
-    computeAngles(p) {
-      const lBody = calculateAngle(p[LM.L_SHOULDER], p[LM.L_HIP], p[LM.L_ANKLE]);
-      const rBody = calculateAngle(p[LM.R_SHOULDER], p[LM.R_HIP], p[LM.R_ANKLE]);
-      const bodyLine = (lBody + rBody) / 2;
-      const hipY = (p[LM.L_HIP].y + p[LM.R_HIP].y) / 2;
-      const shoulderY = (p[LM.L_SHOULDER].y + p[LM.R_SHOULDER].y) / 2;
-      const ankleY = (p[LM.L_ANKLE].y + p[LM.R_ANKLE].y) / 2;
-      const expectedHipY = (shoulderY + ankleY) / 2;
-      const hipDeviation = (hipY - expectedHipY) * 100;
-      return { primary: bodyLine, hipDeviation };
+    computeAngles(p, engine) {
+      // Softer visibility + sticky side (left profile was flickering / dropping out).
+      const soft = (pt) => vis(pt, 0.28);
+      const track = engine._formState.plankTrack || (engine._formState.plankTrack = {
+        side: null,
+        lastBodyLine: 170,
+        lastHipDev: 0,
+      });
+
+      const scoreSide = (side) => {
+        const isLeft = side === "left";
+        const sh = p[isLeft ? LM.L_SHOULDER : LM.R_SHOULDER];
+        const hip = p[isLeft ? LM.L_HIP : LM.R_HIP];
+        const ank = p[isLeft ? LM.L_ANKLE : LM.R_ANKLE];
+        const el = p[isLeft ? LM.L_ELBOW : LM.R_ELBOW];
+        const wr = p[isLeft ? LM.L_WRIST : LM.R_WRIST];
+        if (!soft(sh) || !soft(hip) || !soft(ank)) return -Infinity;
+        const conf = (sh.visibility + hip.visibility + ank.visibility) / 3;
+        const len = dist(sh, hip) + dist(hip, ank);
+        const armBonus = (soft(el) ? 0.35 : 0) + (soft(wr) ? 0.25 : 0);
+        return conf * 2 + len + armBonus;
+      };
+
+      const leftScore = scoreSide("left");
+      const rightScore = scoreSide("right");
+      let side = track.side;
+      if (side === "left" && leftScore > -Infinity && leftScore >= rightScore - 0.4) {
+        side = "left";
+      } else if (side === "right" && rightScore > -Infinity && rightScore >= leftScore - 0.4) {
+        side = "right";
+      } else if (leftScore > -Infinity || rightScore > -Infinity) {
+        side = leftScore >= rightScore ? "left" : "right";
+      }
+      if (side) track.side = side;
+
+      // Keep form-check side in sync so red/green guides use the same limb.
+      const formState = engine._formState.plank || (engine._formState.plank = {});
+      if (side) formState.visibleSide = side;
+
+      if (!side) {
+        return {
+          primary: track.lastBodyLine,
+          bodyLine: track.lastBodyLine,
+          hipDeviation: track.lastHipDev,
+          formAllowsHold: false,
+          inPlankStance: false,
+          sideVisible: false,
+        };
+      }
+
+      const isLeft = side === "left";
+      const shoulder = p[isLeft ? LM.L_SHOULDER : LM.R_SHOULDER];
+      const hip = p[isLeft ? LM.L_HIP : LM.R_HIP];
+      const ankle = p[isLeft ? LM.L_ANKLE : LM.R_ANKLE];
+      const elbow = p[isLeft ? LM.L_ELBOW : LM.R_ELBOW];
+      const wrist = p[isLeft ? LM.L_WRIST : LM.R_WRIST];
+
+      if (!soft(shoulder) || !soft(hip) || !soft(ankle)) {
+        return {
+          primary: track.lastBodyLine,
+          bodyLine: track.lastBodyLine,
+          hipDeviation: track.lastHipDev,
+          formAllowsHold: false,
+          inPlankStance: false,
+          sideVisible: false,
+          activeArm: side,
+        };
+      }
+
+      const bodyLine = calculateAngle(shoulder, hip, ankle);
+      const hipDeviation = hipOffsetFromBodyLine(shoulder, hip, ankle);
+      track.lastBodyLine = bodyLine;
+      track.lastHipDev = hipDeviation;
+
+      const horizontal = !!(engine._cameraAngle && engine._cameraAngle.isHorizontal);
+      const torsoFlat = Math.abs(shoulder.y - ankle.y) < 0.42;
+
+      // True plank = body supported on arms. Lying flat on the floor has shoulders
+      // at roughly the same height as elbows/wrists — that must NOT count.
+      const elbowSupport = soft(elbow) && shoulder.y < elbow.y - 0.035;
+      const wristSupport = soft(wrist) && shoulder.y < wrist.y - 0.045;
+      const armSupporting = elbowSupport || wristSupport;
+
+      // Lying prone: torso on the floor, arm not propping the shoulders up.
+      const lyingFlat = !armSupporting
+        || (Math.abs(shoulder.y - hip.y) < 0.03 && Math.abs(hip.y - ankle.y) < 0.045 && !armSupporting);
+
+      const inPlankStance = !lyingFlat
+        && armSupporting
+        && (horizontal || torsoFlat)
+        && bodyLine > 120;
+
+      // Timer may run only in a real supported plank with inline hips.
+      const t = this.thresholds;
+      const formAllowsHold = inPlankStance
+        && bodyLine >= t.minBodyLine - 8
+        && Math.abs(hipDeviation) <= t.maxHipDev + 1.2;
+
+      return {
+        primary: bodyLine,
+        bodyLine,
+        hipDeviation,
+        formAllowsHold,
+        inPlankStance,
+        sideVisible: true,
+        armSupporting,
+        activeArm: side,
+      };
     },
 
     phases: ["NOT_IN_POSITION", "HOLDING"],
-    thresholds: { minBodyLine: 158, maxHipDev: 9 },
-    minTransitionMs: 600,
+    // Moderate inline band; leave HOLDING if form clearly breaks (so timer pauses).
+    thresholds: {
+      minBodyLine: 145,
+      maxHipDev: 6.0,
+      warnSag: 6.0,
+      warnPike: -6.0,
+    },
+    minTransitionMs: 400,
     holdTimeDisplay: true,
 
-    validateAngle(cam) {
-      return cam.viewAngle === "side" || cam.viewAngle === "angled";
+    validateAngle() {
+      return true;
     },
 
     transitionRules(a, phase) {
       const t = this.thresholds;
-      const inPosition = a.primary > t.minBodyLine && Math.abs(a.hipDeviation) < t.maxHipDev;
+      // Must be in a real plank stance — blocks walk-in / standing false holds.
+      const enterOk = a.inPlankStance
+        && a.sideVisible
+        && a.primary > t.minBodyLine
+        && Math.abs(a.hipDeviation) < t.maxHipDev;
+      // Tighter stay band than before — incorrect form should leave HOLDING.
+      const stayOk = a.sideVisible
+        && a.inPlankStance
+        && a.primary > t.minBodyLine - 14
+        && Math.abs(a.hipDeviation) < t.maxHipDev + 2.5;
       switch (phase) {
-        case "NOT_IN_POSITION": return inPosition ? "HOLDING" : null;
-        case "HOLDING":         return !inPosition ? "NOT_IN_POSITION" : null;
+        case "NOT_IN_POSITION": return enterOk ? "HOLDING" : null;
+        case "HOLDING":         return stayOk ? null : "NOT_IN_POSITION";
         default: return null;
       }
     },
 
-    checkForm(a, phase, cam) {
-      if (cam && !this.validateAngle(cam)) {
-        return { type: "info", msg: this.angleHint };
+    checkForm(a, phase, cam, engine) {
+      const coach = engine._formState.plankCoach || (engine._formState.plankCoach = {
+        candidateMsg: null,
+        candidateType: null,
+        candidateCount: 0,
+        active: null,
+        lockedGoodUntil: 0,
+      });
+      const t = this.thresholds;
+      const now = performance.now();
+      const GOOD = { type: "good", msg: "Keep hips in line with your body, hold steady!" };
+
+      let next;
+      if (!a.sideVisible || !a.armSupporting) {
+        next = { type: "info", msg: "Get into a plank on your hands or forearms, not lying flat" };
+      } else if (!a.inPlankStance || phase !== "HOLDING") {
+        next = { type: "info", msg: "Get into plank position, straight body line" };
+      } else if (a.hipDeviation > t.warnSag + 1.2) {
+        next = { type: "warning", msg: "Hips sagging, tighten your core" };
+      } else if (a.hipDeviation < t.warnPike - 1.2) {
+        next = { type: "warning", msg: "Hips too high, flatten out" };
+      } else if (a.primary < t.minBodyLine - 10) {
+        next = { type: "warning", msg: "Straighten your body, maintain alignment" };
+      } else {
+        next = GOOD;
       }
-      if (phase !== "HOLDING") return { type: "info", msg: "Get into plank position; straight body line" };
-      if (a.hipDeviation > 7)  return { type: "warning", msg: "Hips sagging; tighten your core" };
-      if (a.hipDeviation < -8) return { type: "warning", msg: "Hips too high; flatten out" };
-      if (a.primary < 155)     return { type: "warning", msg: "Straighten your body; maintain alignment" };
-      return { type: "good", msg: "Solid plank; hold steady! 💎" };
+
+      // While holding a correct plank, keep the good message locked for several
+      // seconds so comments don't thrash while the timer is running.
+      if (
+        phase === "HOLDING"
+        && coach.active
+        && coach.active.type === "good"
+        && next.type === "good"
+      ) {
+        coach.lockedGoodUntil = Math.max(coach.lockedGoodUntil || 0, now + 4000);
+        coach.candidateCount = 0;
+        coach.candidateMsg = GOOD.msg;
+        return coach.active;
+      }
+      if (
+        phase === "HOLDING"
+        && coach.active
+        && coach.active.type === "good"
+        && next.type !== "good"
+        && a.formAllowsHold
+        && now < (coach.lockedGoodUntil || 0)
+      ) {
+        // Ignore brief warning blips only while form is still hold-legal.
+        coach.candidateCount = 0;
+        return coach.active;
+      }
+      // Clear the good-lock immediately when form no longer allows the timer.
+      if (!a.formAllowsHold && coach.active?.type === "good" && next.type !== "good") {
+        coach.lockedGoodUntil = 0;
+      }
+
+      // Hard to leave a message: good switches in quickly, warnings need a long hold.
+      const stickyFrames = next.type === "good" ? 10 : (next.type === "warning" ? 20 : 45);
+      if (!coach.active) {
+        coach.active = next;
+        coach.candidateMsg = next.msg;
+        coach.candidateType = next.type;
+        coach.candidateCount = 0;
+        if (next.type === "good" && phase === "HOLDING") {
+          coach.lockedGoodUntil = now + 4000;
+        }
+        return coach.active;
+      }
+      if (next.msg === coach.active.msg) {
+        coach.candidateMsg = next.msg;
+        coach.candidateCount = 0;
+        if (next.type === "good" && phase === "HOLDING") {
+          coach.lockedGoodUntil = Math.max(coach.lockedGoodUntil || 0, now + 4000);
+        }
+        return coach.active;
+      }
+      if (next.msg === coach.candidateMsg) {
+        coach.candidateCount += 1;
+      } else {
+        coach.candidateMsg = next.msg;
+        coach.candidateType = next.type;
+        coach.candidateCount = 1;
+      }
+      if (coach.candidateCount >= stickyFrames) {
+        coach.active = { type: coach.candidateType, msg: coach.candidateMsg };
+        coach.candidateCount = 0;
+        if (coach.active.type === "good" && phase === "HOLDING") {
+          coach.lockedGoodUntil = now + 4000;
+        }
+      }
+      return coach.active;
     },
   },
 };
@@ -1232,6 +2037,7 @@ export class GymMetricEngine {
     this.valleyAngle = null;      // track ROM: min angle in cycle
     this.holdStartTime = 0;
     this.totalHoldTime = 0;
+    this._holdPausedTotal = 0;    // plank: banked seconds while form was good
     this._lastExercise = null;
     this._feedbackCooldown = 0;
     this._lastFeedback = null;
@@ -1265,6 +2071,13 @@ export class GymMetricEngine {
       return [...torso, LM.L_ELBOW, LM.L_WRIST, LM.R_ELBOW, LM.R_WRIST];
     }
 
+    // Push-up / plank: show tracked body line (either side) + ears/knees for form paint.
+    if (key === "push_up" || key === "plank") {
+      const groups = (profile.requiredLandmarkGroups || []).flat();
+      const tracked = profile.trackingLandmarks || [];
+      return [...new Set([...profile.requiredLandmarks, ...groups, ...tracked])];
+    }
+
     return profile.requiredLandmarks;
   }
 
@@ -1278,6 +2091,7 @@ export class GymMetricEngine {
     this.valleyAngle = null;
     this.holdStartTime = 0;
     this.totalHoldTime = 0;
+    this._holdPausedTotal = 0;
     this._lastExercise = null;
     this._feedbackCooldown = 0;
     this._lastFeedback = null;
@@ -1292,6 +2106,7 @@ export class GymMetricEngine {
     this._calibrator.reset();
     this._calibrationState = null;
     this._curlBaseline = null;
+    this._squatDepthSmoothed = null;
   }
 
   smoothPoint(idx, pt) {
@@ -1333,9 +2148,11 @@ export class GymMetricEngine {
     const cameraAngleIndices = [LM.L_SHOULDER, LM.R_SHOULDER, LM.L_HIP, LM.R_HIP];
     const alternativeGroups = profile.requiredLandmarkGroups || [];
     const alternativeIndices = alternativeGroups.flat();
+    const trackingIndices = profile.trackingLandmarks || [];
     const indicesToProcess = new Set([
       ...profile.requiredLandmarks,
       ...alternativeIndices,
+      ...trackingIndices,
       ...cameraAngleIndices,
     ]);
     
@@ -1351,51 +2168,50 @@ export class GymMetricEngine {
       (group) => group.every((idx) => vis(pts[idx]))
     );
     if (!allRequiredVisible || !oneAlternativeVisible) {
-      return this._result(profile, "Can't see key joints; adjust your position", "warning");
+      return this._result(profile, "Can't see key joints, adjust your position", "warning");
     }
 
     // ── Camera angle detection ────────────────────────────
     this._cameraAngle = detectCameraAngle(pts);
     const angleOk = profile.validateAngle ? profile.validateAngle(this._cameraAngle) : true;
 
-    // ── Push-up / Plank: Calibration gate BEFORE any rep/hold logic ──
+    // ── Push-up / Plank: form coaching (no calibration gate — it blocked reps) ──
     let calibrationState = null;
     let formCheck = null;
     if (activeExercise === "push_up" || activeExercise === "plank") {
       const fsKey = activeExercise;
       const formState = this._formState[fsKey] || (this._formState[fsKey] = {});
-      calibrationState = this._calibrator.tick(now, pts, worldLandmarks, formState, activeExercise);
+      // Keep calibrator marked ready so any leftover UI stays quiet.
+      calibrationState = {
+        state: "calibrated",
+        progressPct: 1,
+        prompt: null,
+        rejectionReason: null,
+      };
       this._calibrationState = calibrationState;
 
-      if (calibrationState.state !== "calibrated") {
-        const prompt = calibrationState.rejectionReason || calibrationState.prompt || "Calibrating…";
-        const result = this._result(profile, prompt, "info");
-        result.calibrationState = calibrationState;
-        result.formOk = false;
-        result.formIssues = [];
-        result.formGuideLines = [];
-        return result;
-      }
-
-      const formOpts = {
-        worldLandmarks,
-        baselineHipAngle: this._calibrator.baselineHipAngle,
-        baselineNeckAngle: this._calibrator.baselineNeckAngle,
-        useBaselineRelative: true,
-      };
-
+      const formOpts = { worldLandmarks };
       if (activeExercise === "push_up") {
         formCheck = checkPushupForm(pts, formState, formOpts);
       } else {
         formCheck = checkPlankForm(pts, formState, formOpts);
       }
     } else {
-      formCheck = { isCorrect: true, hipAngle: null, neckAngle: null, issues: [], guideLines: [], rawIsCorrect: true };
+      formCheck = {
+        isCorrect: true,
+        hipAngle: null,
+        neckAngle: null,
+        issues: [],
+        guideLines: [],
+        badLandmarks: [],
+        rawIsCorrect: true,
+      };
     }
     const formOk = formCheck ? formCheck.isCorrect : true;
 
     // ── Compute angles ────────────────────────────────────
-    const angles = profile.computeAngles(pts, this);
+    // Third arg (worldLandmarks) is used by squat; other profiles ignore it.
+    const angles = profile.computeAngles(pts, this, worldLandmarks);
 
     // ── Track velocity ────────────────────────────────────
     this._velocityTracker.push(angles.primary, timeSec);
@@ -1435,7 +2251,8 @@ export class GymMetricEngine {
         const hasMinFrames = this._noRepFrames >= (profile.minRepFrames ?? 4);
         const stabilityResult = profile.stabilityChecks ? profile.stabilityChecks(angles, this) : { pass: true };
         const isAngleOk = angleOk;
-        const isFormOk = activeExercise === "push_up" || activeExercise === "plank" ? formOk : true;
+        // Push-up / plank: form is coached with red segments; do not void the rep.
+        const isFormOk = true;
 
         // All checks must pass to count the rep
         if (hasMinROM && hasMinDuration && hasMinVelocity && hasMinFrames && stabilityResult.pass && isAngleOk && isFormOk) {
@@ -1452,7 +2269,7 @@ export class GymMetricEngine {
             this._feedbackCooldown = now + 1200;
           }
           if (!hasMinROM) {
-            this._lastFeedback = { type: "warning", msg: "Partial rep; go through full range of motion" };
+            this._lastFeedback = { type: "warning", msg: "Partial rep, go through full range of motion" };
             this._feedbackCooldown = now + 1200;
           }
           if (!hasMinVelocity) {
@@ -1491,13 +2308,21 @@ export class GymMetricEngine {
     // ── Hold time tracking ────────────────────────────────
     let holdTime = null;
     if (profile.type === "hold") {
-      if (this.currentPhase === "HOLDING" && formOk) {
-        if (this.holdStartTime === 0) {
-          this.holdStartTime = now;
-        }
-        this.totalHoldTime = (now - this.holdStartTime) / 1000;
+      // Plank: only accumulate time while form is actually good (pause on sag/pike).
+      const holdFormOk = activeExercise === "plank"
+        ? !!(angles.formAllowsHold && formOk)
+        : formOk;
+
+      if (this.currentPhase === "HOLDING" && holdFormOk) {
+        if (this.holdStartTime === 0) this.holdStartTime = now;
+        this.totalHoldTime = this._holdPausedTotal + (now - this.holdStartTime) / 1000;
       } else {
-        this.holdStartTime = 0;
+        // Pause (or leave HOLDING): bank time so far, do not keep counting.
+        if (this.holdStartTime !== 0) {
+          this._holdPausedTotal += (now - this.holdStartTime) / 1000;
+          this.holdStartTime = 0;
+        }
+        this.totalHoldTime = this._holdPausedTotal;
       }
       holdTime = this.totalHoldTime;
     }
@@ -1505,15 +2330,101 @@ export class GymMetricEngine {
     // ── Form feedback ─────────────────────────────────────
     let feedbackResult = profile.checkForm(angles, this.currentPhase, this._cameraAngle, this);
 
-    if (feedbackResult !== null && feedbackResult !== undefined) {
+    if (activeExercise === "plank" || activeExercise === "push_up") {
+      // Sticky coach for plank / push-up — don't let frame jitter rewrite the text.
+      const lockMs = activeExercise === "plank" ? 3500 : 2200;
+      const refreshMs = activeExercise === "plank" ? 2500 : 1600;
+      if (feedbackResult) {
+        if (!this._lastFeedback) {
+          this._lastFeedback = feedbackResult;
+          this._feedbackCooldown = now + lockMs;
+        } else if (feedbackResult.msg === this._lastFeedback.msg) {
+          this._lastFeedback = feedbackResult;
+          if (feedbackResult.type === "good" || this.currentPhase === "HOLDING") {
+            this._feedbackCooldown = Math.max(this._feedbackCooldown, now + refreshMs);
+          }
+        } else if (now >= this._feedbackCooldown) {
+          this._lastFeedback = feedbackResult;
+          this._feedbackCooldown = now + lockMs;
+        }
+        feedbackResult = this._lastFeedback;
+      } else if (this._lastFeedback) {
+        feedbackResult = this._lastFeedback;
+      }
+    } else if (feedbackResult !== null && feedbackResult !== undefined) {
       this._lastFeedback = feedbackResult;
       this._feedbackCooldown = now + 700;
     } else if (now < this._feedbackCooldown && this._lastFeedback) {
       feedbackResult = this._lastFeedback;
     }
 
-    const feedback = feedbackResult ? feedbackResult.msg : "Good form; keep going! 💪";
+    const feedback = feedbackResult ? feedbackResult.msg : "Good form, keep going! 💪";
     const feedbackType = feedbackResult ? feedbackResult.type : "good";
+
+    // Bicep curl: paint the active arm red + show ideal arm guide when elbow drifts.
+    let effectiveFormOk = formOk;
+    let formGuideLines = formCheck?.guideLines || [];
+    let badLandmarks = [];
+
+    // Push-up / plank: selective red segments + green straight-line guides.
+    // Only mark form bad when we have specific joints to paint — never whole-body red.
+    if ((activeExercise === "push_up" || activeExercise === "plank") && formCheck) {
+      badLandmarks = formCheck.badLandmarks || [];
+      formGuideLines = formCheck.guideLines || [];
+      // Clear paint/guides when sticky form is good (debounced upstream).
+      if (formCheck.isCorrect) {
+        badLandmarks = [];
+        formGuideLines = [];
+        effectiveFormOk = true;
+      } else {
+        effectiveFormOk = badLandmarks.length === 0 ? true : formCheck.isCorrect;
+      }
+    }
+
+    if (activeExercise === "bicep_curl") {
+      const curlState = this._formState.bicep_curl;
+      const arm = angles.activeArm;
+      if (curlState && curlState.awayFrames >= 6 && arm) {
+        effectiveFormOk = false;
+        const isLeft = arm === "left";
+        badLandmarks = isLeft
+          ? [LM.L_SHOULDER, LM.L_ELBOW, LM.L_WRIST]
+          : [LM.R_SHOULDER, LM.R_ELBOW, LM.R_WRIST];
+        formGuideLines = buildCurlInlineGuides(
+          pts[isLeft ? LM.L_SHOULDER : LM.R_SHOULDER],
+          pts[isLeft ? LM.L_ELBOW : LM.R_ELBOW],
+          pts[isLeft ? LM.L_WRIST : LM.R_WRIST],
+          pts[isLeft ? LM.L_HIP : LM.R_HIP]
+        );
+      }
+    }
+
+
+    // Squat: red legs + green spaced copies from RAW landmarks (match skeleton).
+    if (activeExercise === "squat" && angles.squatOverlay) {
+      const flags = angles.squatOverlay.flags;
+      if (flags && (flags.leftCave || flags.rightCave || flags.leftFlare || flags.rightFlare || flags.hipShift)) {
+        const drawn = buildSquatLateralOverlay(
+          {
+            lHip: landmarks[LM.L_HIP],
+            rHip: landmarks[LM.R_HIP],
+            lKnee: landmarks[LM.L_KNEE],
+            rKnee: landmarks[LM.R_KNEE],
+            lAnkle: landmarks[LM.L_ANKLE],
+            rAnkle: landmarks[LM.R_ANKLE],
+          },
+          flags
+        );
+        effectiveFormOk = drawn.formOk;
+        badLandmarks = drawn.badLandmarks;
+        formGuideLines = drawn.guideLines;
+      } else {
+        effectiveFormOk = true;
+        badLandmarks = [];
+        formGuideLines = [];
+      }
+    }
+
 
     return {
       reps: this.repCount,
@@ -1525,11 +2436,12 @@ export class GymMetricEngine {
       angleOk,
       activeArm: this._activeArm,
       primaryAngle: Math.round(angles.primary),
-      formOk,
+      formOk: effectiveFormOk,
       formIssues: formCheck?.issues || [],
       formHipAngle: formCheck?.hipAngle ?? null,
       formNeckAngle: formCheck?.neckAngle ?? null,
-      formGuideLines: formCheck?.guideLines || [],
+      formGuideLines,
+      badLandmarks,
       visibleSide: formCheck?.visibleSide || null,
       calibrationState,
     };
@@ -1552,6 +2464,7 @@ export class GymMetricEngine {
       formHipAngle: null,
       formNeckAngle: null,
       formGuideLines: [],
+      badLandmarks: [],
       visibleSide: null,
     };
   }
