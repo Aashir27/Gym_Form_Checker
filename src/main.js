@@ -30,6 +30,23 @@ const btnZoomIn = document.getElementById("btn-zoom-in");
 const btnZoomOut = document.getElementById("btn-zoom-out");
 const zoomControls = document.getElementById("zoom-controls");
 
+function isMobileDevice() {
+  return window.matchMedia("(pointer: coarse)").matches || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
+async function lockLandscapeIfPossible() {
+  if (!isMobileDevice()) return;
+  const orientation = screen.orientation;
+  if (!orientation || orientation.type?.startsWith("landscape")) return;
+  if (typeof orientation.lock !== "function") return;
+
+  try {
+    await orientation.lock("landscape");
+  } catch {
+    // Ignore browsers that require fullscreen or do not support locking.
+  }
+}
+
 /**
  * Keep the drawing buffer aligned with the element's displayed size. The
  * camera frame itself is projected in drawSkeleton() using the same
@@ -141,6 +158,8 @@ async function startCamera(facingMode = "user") {
   currentZoom = 1;
   updateViewTransform();
 
+  await lockLandscapeIfPossible();
+
   if (currentFacingMode === "environment") {
     zoomControls.classList.add("active");
   } else {
@@ -151,6 +170,8 @@ async function startCamera(facingMode = "user") {
     video: {
       width: { ideal: 1920, min: 1280 },
       height: { ideal: 1080, min: 720 },
+      aspectRatio: { ideal: 16 / 9 },
+      resizeMode: "crop-and-scale",
       facingMode: currentFacingMode,
     },
     audio: false,
